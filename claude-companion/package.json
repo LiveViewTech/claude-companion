@@ -1,0 +1,24 @@
+{
+  "name": "claude-companion",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Token/cache cockpit for Claude Code: cost visibility, cache-TTL countdown, keep-warm, advisor, rate-limit guardian",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "daemon": "node packages/daemon/src/index.ts",
+    "doctor": "node packages/cli/src/ccc.ts doctor"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.7"
+  }
+}

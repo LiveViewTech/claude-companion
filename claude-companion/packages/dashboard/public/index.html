@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Companion</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">claude-companion</div>
+  <div class="tiles">
+    <div class="tile">
+      <div class="tile-label">Today</div>
+      <div class="tile-value" id="day-cost">–</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">This month <span class="soft" id="month-note"></span></div>
+      <div class="tile-value" id="month-cost">–</div>
+      <div class="budget-bar" id="budget-bar" hidden><div class="budget-fill" id="budget-fill"></div></div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Active sessions</div>
+      <div class="tile-value" id="active-count">–</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Daemon</div>
+      <div class="tile-value" id="daemon-status"><span class="dot dot-warn"></span>connecting</div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="sessions" class="cards" aria-live="polite"></section>
+
+  <section class="feed-wrap">
+    <h2>Cache economics <span id="cold-week" class="soft"></span></h2>
+    <div id="habits" class="table-wrap"></div>
+  </section>
+
+  <section class="feed-wrap">
+    <h2>Tokens by tool <span class="soft">(chars/4 estimate where exact unavailable)</span></h2>
+    <div id="tools" class="table-wrap"></div>
+  </section>
+
+  <section class="feed-wrap">
+    <h2>rtk verdict <span class="soft">(measured from transcripts — not rtk's own heuristic)</span></h2>
+    <div id="rtk" class="table-wrap"></div>
+  </section>
+
+  <section class="feed-wrap">
+    <h2>Events</h2>
+    <ul id="feed" class="feed"></ul>
+  </section>
+</main>
+
+<template id="card-tpl">
+  <article class="card">
+    <div class="card-head">
+      <div>
+        <div class="proj"></div>
+        <div class="meta"><span class="model"></span> · <span class="turns"></span></div>
+      </div>
+      <span class="badge tier"></span>
+    </div>
+    <div class="card-body">
+      <div class="ring-wrap">
+        <svg class="ring" viewBox="0 0 96 96" role="img">
+          <circle class="ring-track" cx="48" cy="48" r="42" />
+          <circle class="ring-fill" cx="48" cy="48" r="42" />
+        </svg>
+        <div class="ring-text">
+          <div class="countdown">–:––</div>
+          <div class="ring-sub">cache</div>
+        </div>
+      </div>
+      <dl class="stats">
+        <div><dt>Session cost</dt><dd class="cost">–</dd></div>
+        <div><dt>Context prefix</dt><dd class="prefix">–</dd></div>
+        <div><dt>Cold re-write</dt><dd class="rewrite">–</dd></div>
+        <div><dt>Switch model</dt><dd class="switch">–</dd></div>
+        <div class="kw-row"><dt>Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>
+      </dl>
+    </div>
+  </article>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Normalize line endings: store everything as LF in the repo (what Linux uses),
+# while Windows working copies still get CRLF locally via core.autocrlf=true.
+# Prevents "whole file changed" churn when the repo moves between Windows and Linux.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+
+# Common binaries — never normalize.
+*.png binary
+*.jpg binary
+*.ico binary
+*.wav binary
