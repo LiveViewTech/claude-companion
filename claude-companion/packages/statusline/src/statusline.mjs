@@ -40,6 +40,15 @@ function sanitize(id) {
   return String(id ?? "").replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+/** Local wall-clock time as "h:mma"/"h:mmp" (e.g. 10:47p) — compact for a statusline. */
+function clockTime(ms) {
+  const d = new Date(ms);
+  let h = d.getHours();
+  const ap = h >= 12 ? "p" : "a";
+  h = h % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, "0")}${ap}`;
+}
+
 function main() {
   const input = readStdin();
   const sessionId = input.session_id ?? input.sessionId ?? "";
@@ -67,20 +76,22 @@ function main() {
   const effort = input.effort?.level ? ` ${DIM}${input.effort.level}${RESET}` : "";
   parts.push(`${BOLD}${model}${RESET}${effort}`);
 
-  // cache countdown (from daemon state; ground truth from transcripts)
+  // cache expiry (from daemon state; ground truth from transcripts).
+  // Shown as an ABSOLUTE clock time, not a mm:ss countdown: Claude Code only re-runs the
+  // statusline on activity (never on an idle timer), and any activity resets the cache TTL to
+  // full — so a countdown can only ever render at ~full or frozen, never visibly ticking down.
+  // An expiry time reads correctly regardless of when the line is re-rendered.
   if (state?.expiresAt) {
     const left = state.expiresAt - Date.now();
     const tier = state.ttlTier ?? "?";
     if (left <= 0) {
       parts.push(`${RED}cache expired · rewrite $${(state.rewriteCostUsd ?? 0).toFixed(2)}${RESET}`);
     } else {
-      const m = Math.floor(left / 60000);
-      const s = Math.floor((left % 60000) / 1000);
       const col = left < 60_000 ? RED : left < 300_000 ? YELLOW : GREEN;
-      parts.push(`${col}⏱ ${m}:${String(s).padStart(2, "0")}${RESET} ${DIM}(${tier})${RESET}`);
+      parts.push(`${col}⏱ exp ${clockTime(state.expiresAt)}${RESET} ${DIM}(${tier})${RESET}`);
     }
   } else {
-    parts.push(`${DIM}⏱ –:––${RESET}`);
+    parts.push(`${DIM}⏱ exp –:––${RESET}`);
   }
 
   // session cost: prefer official client-side estimate from stdin, fall back to daemon math

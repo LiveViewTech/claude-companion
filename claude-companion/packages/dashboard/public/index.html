@@ -45,8 +45,10 @@
   </section>
 
   <section class="feed-wrap">
-    <h2>rtk verdict <span class="soft">(measured from transcripts — not rtk's own heuristic)</span></h2>
+    <h2>rtk <span class="soft">(Rust Token Killer — command-output compression)</span></h2>
+    <div id="rtk-gain" class="rtk-gain"></div>
     <div id="rtk" class="table-wrap"></div>
+    <div class="soft rtk-note">The A/B table is measured from transcripts, which record the command <em>before</em> rtk's hook rewrites it — so hook-rewritten <code>rtk</code> calls never appear here, and rows stay “insufficient data”. The bar above is rtk's own measurement and is the real signal that it's working.</div>
   </section>
 
   <section class="feed-wrap">
@@ -76,13 +78,13 @@
         </div>
       </div>
       <dl class="stats">
-        <div><dt>Session cost</dt><dd class="cost">–</dd></div>
-        <div><dt>Context prefix</dt><dd class="prefix">–</dd></div>
-        <div><dt>Carry / turn <span class="soft carry-hint"></span></dt><dd class="carry">–</dd></div>
-        <div class="carry-models-row"><dt><span class="soft">…by model</span></dt><dd class="carry-models">–</dd></div>
-        <div><dt>Cold re-write</dt><dd class="rewrite">–</dd></div>
-        <div><dt>Switch model</dt><dd class="switch">–</dd></div>
-        <div class="kw-row"><dt>Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>
+        <div><dt title="Total API list-price cost of this session so far — input + output + cache reads and writes. Same basis as Claude Code's own /cost.">Session cost</dt><dd class="cost">–</dd></div>
+        <div><dt title="How big the conversation context is right now: the tokens re-sent (and re-read from cache) on every single turn. Grows as the chat gets longer.">Context prefix</dt><dd class="prefix">–</dd></div>
+        <div><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Carry / turn <span class="soft carry-hint"></span></dt><dd class="carry">–</dd></div>
+        <div class="carry-models-row"><dt title="The same per-turn carry cost if this session were running on other models (caches are priced per model).">…by model</dt><dd class="carry-models">–</dd></div>
+        <div><dt title="What you'd pay to rebuild the whole cache from scratch if it expires before your next prompt — a full cache write at 1.25× (5-min) to 2× (1-hour) the input rate. Shown as a warning of what idling past the countdown costs.">Cold re-write</dt><dd class="rewrite">–</dd></div>
+        <div><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
+        <div class="kw-row"><dt title="Send tiny pings to keep the cache alive so it doesn't go cold during idle gaps — only worthwhile on 5-minute-TTL sessions. 'net' shows pings' cost vs. the cold re-writes they avoided.">Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>
       </dl>
     </div>
   </article>

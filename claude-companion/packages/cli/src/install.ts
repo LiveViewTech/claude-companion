@@ -52,10 +52,19 @@ function desiredHooks(): DesiredHook[] {
     { event: "UserPromptSubmit", entry: { hooks: [{ type: "command", command: nodeCmd(p.promptSubmit), timeout: 5 }] }, label: "advisor" },
     // Long timeout: the keep-warm hook deliberately sleeps up to one 5m TTL window.
     { event: "Stop", entry: { hooks: [{ type: "command", command: nodeCmd(p.stop), timeout: 600 }] }, label: "keep-warm/guardian" },
-    // Turn signal: sound + dashboard flash on done (Stop) and on permission/question (Notification).
-    // NOT on PermissionRequest — that hook blocks the request and would add latency.
+    // Turn signal: sound + dashboard flash whenever it's the user's turn. The VS Code
+    // extension doesn't reliably emit Notification for AskUserQuestion or permission
+    // prompts, so we cover each case with its dedicated event:
+    //   Stop            -> done       (fires reliably after every response)
+    //   PreToolUse+AUQ  -> question   (documented workaround for the AskUserQuestion gap)
+    //   PermissionRequest -> permission (fires when a permission dialog appears)
+    //   Notification    -> permission/idle (CLI + idle-timeout; harmless no-op in the extension)
+    // turn-signal never emits a decision and exits 0, so PreToolUse/PermissionRequest
+    // fall through to normal behavior — they don't block or auto-approve anything.
     { event: "Stop", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (done)" },
-    { event: "Notification", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (permission/question)" },
+    { event: "PreToolUse", entry: { matcher: "AskUserQuestion", hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (question)" },
+    { event: "PermissionRequest", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (permission)" },
+    { event: "Notification", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (permission/idle)" },
   ];
 }
 

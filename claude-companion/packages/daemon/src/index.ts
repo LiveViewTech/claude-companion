@@ -31,6 +31,9 @@ export async function main(): Promise<void> {
     cfg.turnSignal.enabled && cfg.turnSignal.flash
       ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
       : null;
+  // NOTE: sound is played by the turn-signal HOOK, never the daemon. A detached background
+  // process (the daemon) can't reach the interactive audio session, so daemon-side playback is
+  // silent — verified live. The hook runs as a child of Claude Code in the user's session and can.
 
   // Wire toasts + state files.
   tracker.on("state", (s) => stateWriter.writeSession(s));

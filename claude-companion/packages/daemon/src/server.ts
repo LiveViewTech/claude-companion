@@ -6,6 +6,7 @@ import type { SessionState } from "@ccc/core";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
 import { classStats, computeExactAttribution, rtkVerdict, toolLeaderboard } from "./attribution.ts";
+import { rtkGain } from "./rtk-gain.ts";
 import { coldRewriteSummary, projectHabits } from "./habits.ts";
 
 const MIME: Record<string, string> = {
@@ -89,7 +90,9 @@ export class Server {
       }
       if (p === "/api/rtk") {
         computeExactAttribution(this.store);
-        return void this.json(res, { verdict: rtkVerdict(this.store) });
+        // gain = rtk's own measured savings (ground truth — the transcript-derived
+        // verdict can't see hook-rewritten commands; see rtk-gain.ts).
+        return void this.json(res, { verdict: rtkVerdict(this.store), gain: rtkGain() });
       }
       if (p === "/api/habits") {
         const weekAgo = Date.now() - 7 * 86_400_000;
@@ -175,10 +178,10 @@ export class Server {
   }
 
   /**
-   * "It's your turn" flash: broadcast a `turn` SSE event for the dashboard to
-   * flash + blink its tab title. Debounced per session so the several hooks that
-   * can fire on one stop (or a Stop + Notification pair) flash only once. The
-   * sound is played by the hook itself, so this only drives the visual.
+   * "It's your turn" flash: broadcast a `turn` SSE event for the dashboard to flash + blink its
+   * tab title. Debounced per session so the several hooks that can fire on one stop (or a Stop +
+   * Notification pair) flash only once. The SOUND is played by the hook, not here — a detached
+   * background daemon can't reach the interactive audio session — so this only drives the visual.
    */
   private handleTurn(body: Record<string, unknown>): { ok: true; flashed: boolean } {
     const sessionId = String(body["session_id"] ?? "");
@@ -188,13 +191,7 @@ export class Server {
     const last = this.lastTurnAt.get(sessionId) ?? 0;
     if (now - last < Server.TURN_DEBOUNCE_MS) return { ok: true, flashed: false };
     this.lastTurnAt.set(sessionId, now);
-    this.broadcast("turn", {
-      sessionId,
-      reason,
-      color: this.turnSignal.flashColor,
-      ms: this.turnSignal.flashMs,
-      at: now,
-    });
+    this.broadcast("turn", { sessionId, reason, color: this.turnSignal.flashColor, ms: this.turnSignal.flashMs, at: now });
     return { ok: true, flashed: true };
   }
 

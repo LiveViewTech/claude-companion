@@ -116,6 +116,8 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .stats { display: grid; grid-template-columns: 1fr; gap: 4px; margin: 0; flex: 1; min-width: 0; }
 .stats div { display: flex; justify-content: space-between; gap: 8px; }
 .stats dt { color: var(--ink-2); }
+/* Signal that the label carries an explanation on hover. */
+.stats dt[title] { cursor: help; text-decoration: underline dotted var(--grid); text-underline-offset: 3px; }
 .stats dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .stats dd.switch { font-weight: 400; font-size: 12px; color: var(--ink-2); }
 .stats dd.carry.carry-green { color: var(--good); }
@@ -145,6 +147,17 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .table-wrap tr:last-child td { border-bottom: none; }
 .table-wrap td.num { text-align: right; }
 .table-wrap th.num { text-align: right; }
+/* rtk's own-measured savings summary (ground truth above the transcript A/B). */
+.rtk-gain { margin: 0 0 10px; }
+.rtk-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; font-variant-numeric: tabular-nums; }
+.rtk-ok { color: var(--good); font-weight: 650; }
+.rtk-off { color: var(--serious); font-weight: 600; }
+.rtk-stat { color: var(--ink-2); }
+.rtk-stat b { color: var(--ink-1); font-weight: 650; }
+.rtk-bar { margin-top: 6px; height: 6px; max-width: 420px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+.rtk-fill { height: 100%; width: 0; background: var(--good); border-radius: 999px; transition: width 0.4s ease; }
+.rtk-note { display: block; margin-top: 10px; font-size: 12px; line-height: 1.5; max-width: 640px; }
+.rtk-note code { background: var(--grid); padding: 0 4px; border-radius: 4px; }
 .verdict-saves { color: var(--good); font-weight: 600; }
 .verdict-overhead { color: var(--critical); font-weight: 600; }
 .verdict-none { color: var(--ink-2); }

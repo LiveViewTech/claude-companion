@@ -43,6 +43,13 @@ export interface CccConfig {
     /** Flash duration in milliseconds. */
     flashMs: number;
     /**
+     * Leading silence (ms) the turn-signal HOOK plays before the real sound on Windows, so the
+     * audio device wakes during the silence instead of clipping the start of the sound ("I only
+     * hear the end"). Bump this if the start is still cut off; 0 disables the pre-roll. (Read by
+     * the hook from config.json; the daemon just carries it through.)
+     */
+    soundLeadMs: number;
+    /**
      * Sound file per reason. Absolute path, or "" to use the platform default.
      * On Windows the defaults resolve to C:\Windows\Media\*.wav.
      */
@@ -70,6 +77,7 @@ export const DEFAULTS: CccConfig = {
     flash: true,
     flashColor: "#ffffff",
     flashMs: 260,
+    soundLeadMs: 1200,
     // "" means: let the hook pick a sensible per-platform default.
     sounds: { done: "", question: "", permission: "" },
   },

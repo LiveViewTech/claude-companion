@@ -203,6 +203,7 @@ async function refreshAnalytics() {
       tools.leaderboard.map((t) => [esc(t.tool), String(t.calls), fmtN(t.chars), fmtN(Math.round(t.tokEst)), fmtN(t.tokExact)]),
       [1, 2, 3, 4],
     );
+    renderRtkGain(rtk.gain);
     const vcls = { "rtk saves": "verdict-saves", "rtk adds overhead": "verdict-overhead", "no difference": "verdict-none", "insufficient data": "verdict-nodata" };
     document.getElementById("rtk").innerHTML = table(
       ["Command class", "n (plain/rtk)", "Median chars plain", "Median chars rtk", "Saved", "Verdict"],
@@ -230,6 +231,25 @@ function table(headers, rows, numCols = []) {
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const fmtN = (n) => Number(n).toLocaleString();
+
+/** rtk's OWN measured savings (ground truth). The transcript A/B below can't see
+    hook-rewritten commands, so this bar is the real "is rtk working?" signal. */
+function renderRtkGain(gain) {
+  const el = document.getElementById("rtk-gain");
+  if (!el) return;
+  if (!gain || !gain.available || !gain.totalCommands) {
+    const why = gain && gain.reason ? ` — ${esc(gain.reason)}` : "";
+    el.innerHTML = `<span class="rtk-off">rtk not measured yet${why}.</span> <span class="soft">Once the rtk hook is active and has wrapped some commands, its savings show here.</span>`;
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, Math.round(gain.avgSavingsPct)));
+  el.innerHTML =
+    `<div class="rtk-line"><span class="rtk-ok">✓ rtk running</span>` +
+    `<span class="rtk-stat"><b>${fmtN(gain.totalCommands)}</b> commands wrapped</span>` +
+    `<span class="rtk-stat"><b>${kTok(gain.tokensSaved)}</b> saved</span>` +
+    `<span class="rtk-stat"><b>${pct}%</b> avg</span></div>` +
+    `<div class="rtk-bar"><div class="rtk-fill" style="width:${pct}%"></div></div>`;
+}
 
 /** Update countdown ring + text from data-expires-at. Runs every second. */
 function tick(card) {
@@ -345,3 +365,7 @@ setInterval(() => {
 connect();
 refreshAnalytics();
 setInterval(refreshAnalytics, 60_000);
+// Today/This-month tiles also refresh on every SSE `state` event, but poll on a timer too so
+// they keep converging to the daemon's latest ingest even when all sessions are idle (no events).
+// The daemon count trails claude.ai's live metering during active bursts and catches up at rest.
+setInterval(refreshDayCost, 30_000);
