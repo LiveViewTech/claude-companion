@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+<div id="flash-overlay" aria-hidden="true"></div>
 <header class="topbar">
   <div class="brand">claude-companion</div>
   <div class="tiles">
@@ -77,6 +78,8 @@
       <dl class="stats">
         <div><dt>Session cost</dt><dd class="cost">–</dd></div>
         <div><dt>Context prefix</dt><dd class="prefix">–</dd></div>
+        <div><dt>Carry / turn <span class="soft carry-hint"></span></dt><dd class="carry">–</dd></div>
+        <div class="carry-models-row"><dt><span class="soft">…by model</span></dt><dd class="carry-models">–</dd></div>
         <div><dt>Cold re-write</dt><dd class="rewrite">–</dd></div>
         <div><dt>Switch model</dt><dd class="switch">–</dd></div>
         <div class="kw-row"><dt>Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>

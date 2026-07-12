@@ -4,6 +4,7 @@ import {
   isColdRewrite,
   modelSwitchCostUsd,
   pingCostUsd,
+  prefixTaxUsd,
   prefixTokens,
   rewriteCostUsd,
 } from "../src/economics.ts";
@@ -90,5 +91,14 @@ describe("economics", () => {
   it("model switch cost uses the new model's write rate", () => {
     // 200k prefix, switching to Opus 4.8 ($5/M) at 5m tier: 0.2M * 5 * 1.25 = $1.25
     expect(modelSwitchCostUsd(200_000, "5m", "claude-opus-4-8")).toBeCloseTo(1.25, 10);
+  });
+
+  it("prefix tax = warm cache read of the prefix (0.1x input), model-dependent", () => {
+    // 460k prefix on Fable 5 ($10/M) at read rate: 0.46M * 10 * 0.1 = $0.46/turn (handoff example).
+    expect(prefixTaxUsd(460_000, FABLE)).toBeCloseTo(0.46, 10);
+    // Same prefix on Opus 4.8 ($5/M): half the tax.
+    expect(prefixTaxUsd(460_000, "claude-opus-4-8")).toBeCloseTo(0.23, 10);
+    // Unknown model prices at $0 rather than throwing.
+    expect(prefixTaxUsd(460_000, "totally-unknown")).toBe(0);
   });
 });

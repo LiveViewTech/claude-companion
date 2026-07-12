@@ -29,6 +29,7 @@ function repoPaths() {
     sessionStart: path.join(root, "packages", "hooks", "src", "session-start.mjs"),
     promptSubmit: path.join(root, "packages", "hooks", "src", "user-prompt-submit.mjs"),
     stop: path.join(root, "packages", "hooks", "src", "stop-keepwarm.mjs"),
+    turnSignal: path.join(root, "packages", "hooks", "src", "turn-signal.mjs"),
   };
 }
 
@@ -36,14 +37,26 @@ function nodeCmd(script: string): string {
   return `node "${script}"`;
 }
 
-function desiredHooks(): Record<string, HookEntry> {
+/** One desired hook registration. A LIST (not a per-event map) so multiple ccc
+ *  hooks can coexist on one event (e.g. Stop carries keep-warm AND turn-signal). */
+interface DesiredHook {
+  event: string;
+  entry: HookEntry;
+  label: string;
+}
+
+function desiredHooks(): DesiredHook[] {
   const p = repoPaths();
-  return {
-    SessionStart: { hooks: [{ type: "command", command: nodeCmd(p.sessionStart), timeout: 10 }] },
-    UserPromptSubmit: { hooks: [{ type: "command", command: nodeCmd(p.promptSubmit), timeout: 5 }] },
+  return [
+    { event: "SessionStart", entry: { hooks: [{ type: "command", command: nodeCmd(p.sessionStart), timeout: 10 }] }, label: "daemon autostart" },
+    { event: "UserPromptSubmit", entry: { hooks: [{ type: "command", command: nodeCmd(p.promptSubmit), timeout: 5 }] }, label: "advisor" },
     // Long timeout: the keep-warm hook deliberately sleeps up to one 5m TTL window.
-    Stop: { hooks: [{ type: "command", command: nodeCmd(p.stop), timeout: 600 }] },
-  };
+    { event: "Stop", entry: { hooks: [{ type: "command", command: nodeCmd(p.stop), timeout: 600 }] }, label: "keep-warm/guardian" },
+    // Turn signal: sound + dashboard flash on done (Stop) and on permission/question (Notification).
+    // NOT on PermissionRequest — that hook blocks the request and would add latency.
+    { event: "Stop", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (done)" },
+    { event: "Notification", entry: { hooks: [{ type: "command", command: nodeCmd(p.turnSignal), timeout: 10 }] }, label: "turn-signal (permission/question)" },
+  ];
 }
 
 function isOurs(cmd: string): boolean {
@@ -75,15 +88,18 @@ export async function install(dryRun: boolean): Promise<number> {
     console.log(`      to chain it, have it exec our script too, or remove it and re-run ccc install.`);
   }
 
-  // Hooks: append ours per event if not already present.
+  // Hooks: append ours if not already present. Dedup by EXACT command string
+  // (not "is it ours?"), so a second ccc hook on the same event — e.g. turn-signal
+  // alongside keep-warm on Stop — is added rather than mistaken for already-present.
   const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
-  for (const [event, entry] of Object.entries(desiredHooks())) {
+  for (const { event, entry, label } of desiredHooks()) {
     const list = hooks[event] ?? [];
-    const present = list.some((e) => e.hooks?.some((h) => isOurs(h.command)));
+    const cmd = entry.hooks[0]!.command;
+    const present = list.some((e) => e.hooks?.some((h) => h.command === cmd));
     if (!present) {
       list.push(entry);
       hooks[event] = list;
-      changes.push(`hooks.${event} += ccc ${event === "Stop" ? "keep-warm/guardian" : event === "UserPromptSubmit" ? "advisor" : "daemon autostart"}`);
+      changes.push(`hooks.${event} += ccc ${label}`);
     }
   }
   settings["hooks"] = hooks;

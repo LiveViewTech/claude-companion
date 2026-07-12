@@ -27,6 +27,10 @@ export async function main(): Promise<void> {
   const watcher = new TranscriptWatcher(claudeProjectsDir(), tracker);
   const server = new Server(tracker, store, cfg.port);
   server.monthlyBudgetUsd = cfg.monthlyBudgetUsd;
+  server.turnSignal =
+    cfg.turnSignal.enabled && cfg.turnSignal.flash
+      ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
+      : null;
 
   // Wire toasts + state files.
   tracker.on("state", (s) => stateWriter.writeSession(s));

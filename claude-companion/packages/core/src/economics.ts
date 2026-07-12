@@ -22,6 +22,18 @@ export function rewriteCostUsd(prefix: number, tier: TtlTier, modelId: string): 
   return (prefix / 1_000_000) * price.inputPerM * mult;
 }
 
+/**
+ * "Prefix tax": USD to carry the cached prefix for one more turn — the warm
+ * cache read the next request pays just to re-read the existing context
+ * (0.1x input rate). This is the ambient cost of NOT starting fresh; a new
+ * chat pays ~0 of it. Same math as a keep-warm ping minus the output tokens.
+ */
+export function prefixTaxUsd(prefix: number, modelId: string): number {
+  const price = lookupPrice(modelId);
+  if (!price) return 0;
+  return (prefix / 1_000_000) * price.inputPerM * CACHE_READ_MULT;
+}
+
 /** USD for one cache-refreshing ping: prefix read + measured/estimated output. */
 export function pingCostUsd(prefix: number, modelId: string, outputTokens = 200): number {
   const price = lookupPrice(modelId);

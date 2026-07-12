@@ -30,6 +30,11 @@ export class Server {
   private port: number;
   /** Monthly spend cap (USD) for the dashboard "this month" tile; null = no cap. Set by index.ts. */
   monthlyBudgetUsd: number | null = null;
+  /** Dashboard flash config for the "it's your turn" signal; null = flashing off. Set by index.ts. */
+  turnSignal: { flashColor: string; flashMs: number } | null = null;
+  /** Per-session debounce for /turn so a burst of Stop/Notification hooks flashes once. */
+  private lastTurnAt = new Map<string, number>();
+  private static TURN_DEBOUNCE_MS = 1200;
   /** Feature endpoints plugged in by index.ts (advisor M3, keep-warm M5). */
   handlers: {
     advise?: (body: Record<string, unknown>) => unknown;
@@ -58,6 +63,12 @@ export class Server {
       this.server.once("error", reject);
       this.server.listen(this.port, "127.0.0.1", () => resolve());
     });
+  }
+
+  /** Actual bound port (differs from the requested port when listening on 0). */
+  get boundPort(): number {
+    const a = this.server.address();
+    return typeof a === "object" && a ? a.port : this.port;
   }
 
   close(): void {
@@ -96,6 +107,7 @@ export class Server {
         return void this.post(req, res, (b) => this.handlers.keepwarmAuthorize?.(String(b["session_id"] ?? "")) ?? { ping: false, reason: "keep-warm not available" });
       if (req.method === "POST" && p === "/keepwarm/arm")
         return void this.post(req, res, (b) => this.handlers.keepwarmSetArmed?.(String(b["session_id"] ?? ""), Boolean(b["armed"])) ?? { error: "not available" });
+      if (req.method === "POST" && p === "/turn") return void this.post(req, res, (b) => this.handleTurn(b));
       if (p.startsWith("/api/")) return void this.json(res, { error: "not found" }, 404);
       return void this.static(p === "/" ? "/index.html" : p, res);
     } catch (e) {
@@ -160,6 +172,30 @@ export class Server {
       monthStart,
       monthlyBudgetUsd: this.monthlyBudgetUsd,
     };
+  }
+
+  /**
+   * "It's your turn" flash: broadcast a `turn` SSE event for the dashboard to
+   * flash + blink its tab title. Debounced per session so the several hooks that
+   * can fire on one stop (or a Stop + Notification pair) flash only once. The
+   * sound is played by the hook itself, so this only drives the visual.
+   */
+  private handleTurn(body: Record<string, unknown>): { ok: true; flashed: boolean } {
+    const sessionId = String(body["session_id"] ?? "");
+    const reason = String(body["reason"] ?? "done");
+    if (!this.turnSignal) return { ok: true, flashed: false };
+    const now = Date.now();
+    const last = this.lastTurnAt.get(sessionId) ?? 0;
+    if (now - last < Server.TURN_DEBOUNCE_MS) return { ok: true, flashed: false };
+    this.lastTurnAt.set(sessionId, now);
+    this.broadcast("turn", {
+      sessionId,
+      reason,
+      color: this.turnSignal.flashColor,
+      ms: this.turnSignal.flashMs,
+      at: now,
+    });
+    return { ok: true, flashed: true };
   }
 
   private sse(res: http.ServerResponse): void {

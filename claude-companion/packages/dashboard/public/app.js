@@ -40,6 +40,7 @@ function connect() {
   for (const kind of ["coldRewrite", "expiryWarning", "expired"]) {
     es.addEventListener(kind, (e) => addFeedItem(kind, JSON.parse(e.data)));
   }
+  es.addEventListener("turn", (e) => onTurn(JSON.parse(e.data)));
   es.onerror = () => {
     setDaemon(false);
     es.close();
@@ -122,6 +123,22 @@ function fillCard(card, s) {
   tier.className = `badge tier ${s.ttlTier ? `tier-${s.ttlTier}` : ""}`;
   card.querySelector(".cost").textContent = usd(s.sessionCostUsd);
   card.querySelector(".prefix").textContent = kTok(s.prefixTokens);
+
+  // "Start fresh?" indicator: what it costs to carry this context each turn.
+  const tax = Number(s.prefixTaxUsd || 0);
+  const carryEl = card.querySelector(".carry");
+  carryEl.textContent = tax ? usd(tax) : "–";
+  carryEl.className = `carry ${carryClass(tax)}`;
+  const hint = card.querySelector(".carry-hint");
+  // Ambient, not a directive — a fresh chat pays ~none of this per turn.
+  hint.textContent = tax >= 0.1 ? `· fresh chat saves ~${usd(tax)}/turn` : "";
+  const cur = normModel(s.model);
+  const byModel = Object.entries(s.prefixTaxByModel || {})
+    .filter(([m]) => m !== cur)
+    .map(([m, c]) => `${shortModel(m)} ${usd(c)}`)
+    .join(" · ");
+  card.querySelector(".carry-models").textContent = byModel || "–";
+
   card.querySelector(".rewrite").textContent = s.rewriteCostUsd ? usd(s.rewriteCostUsd) : "–";
   const sw = Object.entries(s.modelSwitchCostUsd || {})
     .map(([m, c]) => `${shortModel(m)} ${usd(c)}`)
@@ -263,11 +280,62 @@ function addFeedItem(kind, data) {
   while (feedEl.children.length > 50) feedEl.lastChild.remove();
 }
 
+/* "It's your turn" — flash the overlay for its duration and blink the tab title
+   until the user looks (visibilitychange) or a timeout, so it works when hidden. */
+const flashOverlay = document.getElementById("flash-overlay");
+const BASE_TITLE = document.title;
+let flashTimer = null;
+let blinkTimer = null;
+let blinkStopTimer = null;
+
+function onTurn(data) {
+  if (flashOverlay) {
+    flashOverlay.style.setProperty("--flash-color", data.color || "#ffffff");
+    flashOverlay.classList.add("on");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => flashOverlay.classList.remove("on"), Math.max(80, Number(data.ms) || 260));
+  }
+  blinkTitle(data.reason);
+}
+
+function blinkTitle(reason) {
+  if (!document.hidden) return; // already looking — flash is enough
+  const label = reason === "permission" ? "🔔 needs you" : reason === "question" ? "❓ your answer" : "✅ your turn";
+  clearInterval(blinkTimer);
+  clearTimeout(blinkStopTimer);
+  let on = true;
+  document.title = `${label} · ${BASE_TITLE}`;
+  blinkTimer = setInterval(() => {
+    document.title = on ? BASE_TITLE : `${label} · ${BASE_TITLE}`;
+    on = !on;
+  }, 800);
+  blinkStopTimer = setTimeout(stopBlink, 30_000);
+}
+
+function stopBlink() {
+  clearInterval(blinkTimer);
+  clearTimeout(blinkStopTimer);
+  blinkTimer = null;
+  document.title = BASE_TITLE;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) stopBlink();
+});
+
 function shortSlug(slug) {
   return (slug || "").replace(/^[Cc]--Users-[^-]+-/, "").replace(/-/g, "/") || slug;
 }
 function shortModel(m) {
   return (m || "?").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+function normModel(m) {
+  return (m || "").replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "").toLowerCase();
+}
+/** Magnitude bucket for the per-turn carry cost (label carries the value; color is supplementary). */
+function carryClass(v) {
+  if (!v) return "";
+  return v >= 0.3 ? "carry-red" : v >= 0.1 ? "carry-yellow" : "carry-green";
 }
 
 setInterval(() => {

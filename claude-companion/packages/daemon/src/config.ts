@@ -87,6 +87,11 @@ export function loadConfig(): CccConfig {
       ...raw,
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
       keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
+      turnSignal: {
+        ...DEFAULTS.turnSignal,
+        ...(raw.turnSignal ?? {}),
+        sounds: { ...DEFAULTS.turnSignal.sounds, ...(raw.turnSignal?.sounds ?? {}) },
+      },
     };
   } catch {
     return { ...DEFAULTS };

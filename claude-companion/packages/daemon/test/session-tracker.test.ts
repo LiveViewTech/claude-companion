@@ -79,6 +79,16 @@ describe("SessionTracker", () => {
     expect(s.sessionCostUsd).toBeGreaterThan(0);
   });
 
+  it("computes the prefix tax (carry-cost/turn) on the current + candidate models", () => {
+    // 50_100-token prefix on Fable 5 ($10/M): 0.0501M * 10 * 0.1 = $0.0501/turn.
+    ingest(assistantLine({ uuid: "px1", ts: "2026-07-11T10:00:00.000Z", write5m: 50_000, input: 100, output: 500 }));
+    const s = tracker.get("sess-t")!;
+    expect(s.prefixTaxUsd).toBeCloseTo(0.0501, 6);
+    // Same prefix priced on Opus 4.8 ($5/M) would be half — surfaced for the switch-vs-fresh compare.
+    expect(s.prefixTaxByModel["claude-opus-4-8"]).toBeCloseTo(0.02505, 6);
+    expect(s.prefixTaxByModel["claude-fable-5"]).toBeCloseTo(0.0501, 6);
+  });
+
   it("is idempotent on duplicate entries (re-tail safe)", () => {
     const line = assistantLine({ uuid: "dup", ts: "2026-07-11T10:00:00.000Z", write1h: 1000 });
     ingest(line);

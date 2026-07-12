@@ -3,6 +3,7 @@ import {
   classifyCommand,
   isColdRewrite,
   modelSwitchCostUsd,
+  prefixTaxUsd,
   prefixTokens,
   rewriteCostUsd,
   ttlSeconds,
@@ -145,11 +146,14 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
         state.prefixTokens = prefix;
         state.rewriteCostUsd = tier && state.model ? rewriteCostUsd(prefix, tier, state.model) : 0;
         state.modelSwitchCostUsd = {};
+        state.prefixTaxByModel = {};
         for (const m of CANDIDATE_MODELS) {
           if (state.model && m !== normalize(state.model)) {
             state.modelSwitchCostUsd[m] = modelSwitchCostUsd(prefix, tier, m);
           }
+          state.prefixTaxByModel[m] = prefixTaxUsd(prefix, m);
         }
+        state.prefixTaxUsd = state.model ? prefixTaxUsd(prefix, state.model) : 0;
       }
       if (inserted) {
         state.sessionCostUsd += cost.totalUsd;
@@ -212,6 +216,9 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       if (state.ttlTier && state.model) {
         state.rewriteCostUsd = rewriteCostUsd(state.prefixTokens, state.ttlTier, state.model);
       }
+      state.prefixTaxUsd = state.model ? prefixTaxUsd(state.prefixTokens, state.model) : 0;
+      state.prefixTaxByModel = {};
+      for (const m of CANDIDATE_MODELS) state.prefixTaxByModel[m] = prefixTaxUsd(state.prefixTokens, m);
       state.updatedAt = Date.now();
       this.sessions.set(r.sid, state);
     }
@@ -264,6 +271,8 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       sessionCostUsd: 0,
       turns: 0,
       modelSwitchCostUsd: {},
+      prefixTaxUsd: 0,
+      prefixTaxByModel: {},
       keepwarm: { armed: false, pings: 0, netSavedUsd: 0, nextPingAt: null, reason: "not implemented (M5)" },
       guardian: {
         fiveHourPct: null,

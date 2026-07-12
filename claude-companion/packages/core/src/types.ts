@@ -102,6 +102,14 @@ export interface SessionState {
   turns: number;
   /** Cost of switching to each candidate model right now (cache re-write), USD. */
   modelSwitchCostUsd: Record<string, number>;
+  /**
+   * "Prefix tax": USD paid each turn just to re-read this session's context
+   * (warm cache read, 0.1x input) on the current model. The ambient cost of
+   * carrying history vs. starting a fresh chat.
+   */
+  prefixTaxUsd: number;
+  /** Prefix tax per turn on each candidate model right now, USD (for switch-vs-fresh compare). */
+  prefixTaxByModel: Record<string, number>;
   keepwarm: {
     armed: boolean;
     pings: number;
