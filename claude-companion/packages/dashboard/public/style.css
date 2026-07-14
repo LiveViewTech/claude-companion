@@ -145,6 +145,19 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .carry-hint { font-size: 11px; }
 
 .feed-wrap h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 26px 0 8px; }
+.feed-wrap details.collapsible { margin: 26px 0 8px; }
+.feed-wrap details.collapsible summary {
+  font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted);
+  cursor: pointer; list-style: none; user-select: none;
+}
+.feed-wrap details.collapsible summary::-webkit-details-marker { display: none; }
+.feed-wrap details.collapsible summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px; font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.feed-wrap details.collapsible[open] summary::before { transform: rotate(90deg); }
+.feed-wrap details.collapsible summary:hover { color: var(--ink-2); }
+.feed-wrap details.collapsible > .table-wrap { margin-top: 8px; }
 .feed { list-style: none; margin: 0; padding: 0; }
 .feed li {
   padding: 8px 12px;

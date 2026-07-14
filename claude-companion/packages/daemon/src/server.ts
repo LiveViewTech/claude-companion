@@ -36,6 +36,10 @@ export class Server {
   private port: number;
   /** Monthly spend cap (USD) for the dashboard "this month" tile; null = no cap. Set by index.ts. */
   monthlyBudgetUsd: number | null = null;
+  /** Live account usage from Anthropic's OAuth endpoint; null when the poller is disabled. Set by index.ts. */
+  accountUsage: (() => unknown) | null = null;
+  /** Parsed status + raw endpoint response, for /api/account drift debugging. Set by index.ts. */
+  accountRaw: (() => unknown) | null = null;
   /** Sessions whose cwd is this directory are hidden from the dashboard (the namer's own `claude -p` runs). */
   hideSessionsUnder: string | null = null;
   /** Dashboard flash config for the "it's your turn" signal; null = flashing off. Set by index.ts. */
@@ -116,6 +120,7 @@ export class Server {
         const sid = url.searchParams.get("session_id") ?? "";
         return void this.json(res, this.handlers.keepwarmBreakEven?.(sid) ?? null);
       }
+      if (p === "/api/account") return void this.json(res, this.accountRaw?.() ?? { error: "account usage disabled" });
       if (p === "/api/config") return void this.json(res, this.handlers.getConfig?.() ?? {});
       if (p === "/events") return void this.sse(res);
       if (req.method === "POST" && p === "/advise") return void this.post(req, res, (b) => this.handlers.advise?.(b) ?? {});
@@ -187,12 +192,14 @@ export class Server {
     monthCostUsd: number;
     monthStart: number;
     monthlyBudgetUsd: number | null;
+    account: unknown;
   } {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const end = start + 86_400_000;
     // Month-to-date: first of the local month through now. dayCostUsd is just a
-    // SUM(cost_usd) over a ts range, so it serves the month window too.
+    // SUM(cost_usd) over a ts range, so it serves the month window too. This is the
+    // local this-device estimate; `account` carries the claude.ai meter when available.
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     return {
       dayCostUsd: this.store.dayCostUsd(start, end),
@@ -201,6 +208,7 @@ export class Server {
       monthCostUsd: this.store.dayCostUsd(monthStart, now.getTime() + 1),
       monthStart,
       monthlyBudgetUsd: this.monthlyBudgetUsd,
+      account: this.accountUsage?.() ?? null,
     };
   }
 

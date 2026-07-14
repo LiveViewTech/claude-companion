@@ -51,3 +51,10 @@ export function claudeSettingsPath(env: NodeJS.ProcessEnv = process.env): string
   if (configDir) return path.join(configDir, "settings.json");
   return path.join(os.homedir(), ".claude", "settings.json");
 }
+
+/** Claude Code OAuth credentials file (written by `claude` login, rotated on token refresh). */
+export function claudeCredentialsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env["CLAUDE_CONFIG_DIR"];
+  if (configDir) return path.join(configDir, ".credentials.json");
+  return path.join(os.homedir(), ".claude", ".credentials.json");
+}

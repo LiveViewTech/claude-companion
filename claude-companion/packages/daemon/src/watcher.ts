@@ -35,11 +35,12 @@ export class TranscriptWatcher {
     // 1) Backfill: parse all existing transcripts without firing timers/toasts.
     this.initialScan();
     // 2) Live watch. Polling keeps this robust on Windows/OneDrive/network drives;
-    //    chokidar v4 uses native events where reliable.
+    //    chokidar v4 uses native events where reliable. Subagent transcripts nest at
+    //    <slug>/<session-id>/subagents/*.jsonl, so the depth limit must reach past 3.
     this.watcher = chokidar.watch(this.projectsDir, {
       ignoreInitial: true,
       awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
-      depth: 3,
+      depth: 6,
     });
     this.watcher.on("add", (f) => this.onChange(f));
     this.watcher.on("change", (f) => this.onChange(f));
@@ -51,27 +52,33 @@ export class TranscriptWatcher {
   }
 
   private initialScan(): void {
-    let dirs: string[] = [];
+    for (const f of this.findTranscripts(this.projectsDir)) {
+      this.consume(f, false);
+      this.backfilled.add(f);
+    }
+  }
+
+  /**
+   * All .jsonl under `dir`, recursively — session transcripts sit at depth 2
+   * (<slug>/<session>.jsonl), subagent transcripts deeper
+   * (<slug>/<session-id>/subagents/agent-*.jsonl). A dir's own files are
+   * consumed before its subdirs so parent sessions ingest before their agents.
+   */
+  private findTranscripts(dir: string): string[] {
+    let entries: fs.Dirent[];
     try {
-      dirs = fs
-        .readdirSync(this.projectsDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => path.join(this.projectsDir, d.name));
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      return;
+      return [];
     }
-    for (const dir of dirs) {
-      let files: string[] = [];
-      try {
-        files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => path.join(dir, f));
-      } catch {
-        continue;
-      }
-      for (const f of files) {
-        this.consume(f, false);
-        this.backfilled.add(f);
-      }
+    const files: string[] = [];
+    const subdirs: string[] = [];
+    for (const e of entries) {
+      if (e.isDirectory()) subdirs.push(path.join(dir, e.name));
+      else if (e.name.endsWith(".jsonl")) files.push(path.join(dir, e.name));
     }
+    for (const d of subdirs) files.push(...this.findTranscripts(d));
+    return files;
   }
 
   private onChange(file: string): void {
@@ -80,7 +87,10 @@ export class TranscriptWatcher {
   }
 
   private consume(file: string, live: boolean): void {
-    const slug = path.basename(path.dirname(file));
+    // Project slug = first path segment under projectsDir. basename(dirname)
+    // would misname nested subagent transcripts as project "subagents".
+    const rel = path.relative(this.projectsDir, file);
+    const slug = rel.split(path.sep)[0] ?? path.basename(path.dirname(file));
     const lines = this.tailer.readNew(file);
     if (lines.length > 0 && this.tailer.offsetOf(file) > 0) this.stats.files = Math.max(this.stats.files, this.backfilled.size);
     for (const line of lines) {

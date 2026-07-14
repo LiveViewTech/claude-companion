@@ -80,6 +80,52 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+describe("Guardian account windows", () => {
+  const FRESH_SID = "sess-fresh";
+
+  function seedFresh(): void {
+    const line = JSON.stringify({
+      type: "assistant",
+      uuid: "seed-fresh",
+      sessionId: FRESH_SID,
+      timestamp: new Date().toISOString(),
+      message: { model: "claude-fable-5", role: "assistant", content: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    const { entry } = parseLine(line);
+    tracker.ingest(entry!, "proj", false);
+  }
+
+  function accountUsage(fiveHourPct: number) {
+    return {
+      usedUsd: 250,
+      monthlyLimitUsd: 500,
+      fiveHour: { name: "five_hour", utilization: fiveHourPct, resetsAt: "2026-07-20T05:00:00Z" },
+      sevenDay: null,
+      windows: [],
+      fetchedAt: Date.now(),
+    };
+  }
+
+  it("feeds account-wide windows to recently-active sessions and fires thresholds", () => {
+    seedFresh();
+    const g = makeGuardian();
+    const changed = g.applyAccountWindows(accountUsage(85));
+    expect(changed.map((s) => s.sessionId)).toEqual([FRESH_SID]);
+    const gs = tracker.get(FRESH_SID)!.guardian;
+    expect(gs.fiveHourPct).toBe(85);
+    expect(gs.fiveHourResetsAt).toBe(Math.round(Date.parse("2026-07-20T05:00:00Z") / 1000));
+    expect(notifications.map((n) => n.level)).toEqual(["notify"]);
+  });
+
+  it("skips idle sessions so wrap-ups never arm on dead sessions", () => {
+    // Only the stale seed session (2026-07-11) exists.
+    const g = makeGuardian();
+    expect(g.applyAccountWindows(accountUsage(95))).toEqual([]);
+    expect(tracker.get(SID)!.guardian.fiveHourPct).toBeNull();
+    expect(notifications).toHaveLength(0);
+  });
+});
+
 describe("Guardian", () => {
   it("stays quiet below thresholds", () => {
     writeCourier(50);

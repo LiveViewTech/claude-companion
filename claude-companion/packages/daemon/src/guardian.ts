@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionState } from "@ccc/core";
+import type { AccountUsage } from "./account-usage.ts";
 import type { CccConfig } from "./config.ts";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
@@ -51,6 +52,35 @@ export class Guardian {
     this.cfg = opts.cfg;
     this.courierDir = path.join(opts.stateDir, "courier");
     this.onNotify = opts.onNotify;
+  }
+
+  /** Sessions this much idle or more don't get account-window updates (avoids arming wrap-ups on dead sessions). */
+  static ACCOUNT_APPLY_WINDOW_MS = 30 * 60_000;
+
+  /**
+   * Feed the account-wide usage windows from the OAuth usage endpoint into every
+   * recently-active session. The 5h/7d windows are account-global, so this covers
+   * sessions the statusline courier can't reach (VS Code extension sessions have
+   * no statusline). Same numbers as the courier; the updatedAt guard in apply()
+   * ordering means whichever source is fresher wins. Returns changed sessions.
+   */
+  applyAccountWindows(usage: AccountUsage): SessionState[] {
+    const payload: CourierPayload = {
+      ts: usage.fetchedAt,
+      rate_limits: {
+        ...(usage.fiveHour ? { five_hour: { used_percentage: usage.fiveHour.utilization, resets_at: isoToUnixSeconds(usage.fiveHour.resetsAt) } } : {}),
+        ...(usage.sevenDay ? { seven_day: { used_percentage: usage.sevenDay.utilization, resets_at: isoToUnixSeconds(usage.sevenDay.resetsAt) } } : {}),
+      },
+    };
+    if (!payload.rate_limits.five_hour && !payload.rate_limits.seven_day) return [];
+    const changed: SessionState[] = [];
+    const cutoff = Date.now() - Guardian.ACCOUNT_APPLY_WINDOW_MS;
+    for (const state of this.tracker.all) {
+      if (state.lastTurnAt == null || state.lastTurnAt < cutoff) continue;
+      if (state.guardian.updatedAt != null && payload.ts <= state.guardian.updatedAt) continue;
+      if (this.apply(state, payload)) changed.push(state);
+    }
+    return changed;
   }
 
   /** Scan courier files and update guardian state. Called on an interval. Returns changed sessions. */
@@ -126,4 +156,10 @@ export class Guardian {
     this.store.logEvent("guardian_delivered", sessionId, { action });
     return true;
   }
+}
+
+function isoToUnixSeconds(iso: string | null): number | undefined {
+  if (!iso) return undefined;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? Math.round(ms / 1000) : undefined;
 }

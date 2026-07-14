@@ -15,6 +15,20 @@ export interface CccConfig {
    * Console spend limit ($200 here). null = show the running total with no cap.
    */
   monthlyBudgetUsd: number | null;
+  /**
+   * Account-usage sync — polls Anthropic's OAuth usage endpoint (the source behind
+   * the claude.ai Settings -> Usage page) with the Claude Code login token, so the
+   * dashboard's monthly tile matches the website exactly: all devices/surfaces and
+   * the real billing cycle, unlike the local transcript estimate. Read-only; the
+   * token goes only to api.anthropic.com. Undocumented endpoint — on failure the
+   * tile falls back to the local estimate + monthlyBudgetUsd.
+   */
+  accountUsage: {
+    /** Master switch. */
+    enabled: boolean;
+    /** Seconds between polls. */
+    pollSeconds: number;
+  };
   guardian: {
     /** off | notify-only | wrapup | handoff */
     action: "off" | "notify-only" | "wrapup" | "handoff";
@@ -99,6 +113,7 @@ export const DEFAULTS: CccConfig = {
   toasts: true,
   warnBeforeSeconds: 60,
   monthlyBudgetUsd: null,
+  accountUsage: { enabled: true, pollSeconds: 60 },
   guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
   keepwarm: { enabled: true, maxPingsPerIdle: 12 },
   advisor: { enabled: true, nudgeEvery: 10 },
@@ -127,6 +142,7 @@ export function loadConfig(): CccConfig {
     return {
       ...DEFAULTS,
       ...raw,
+      accountUsage: { ...DEFAULTS.accountUsage, ...(raw.accountUsage ?? {}) },
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
       keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
       advisor: { ...DEFAULTS.advisor, ...(raw.advisor ?? {}) },

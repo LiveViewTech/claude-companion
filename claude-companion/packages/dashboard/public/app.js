@@ -89,25 +89,37 @@ function setDaemon(ok) {
 async function refreshDayCost() {
   try {
     const r = await fetch("/api/day");
-    const { dayCostUsd, monthCostUsd, monthlyBudgetUsd } = await r.json();
+    const { dayCostUsd, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
     dayCostEl.textContent = usd(dayCostUsd);
-    if (typeof monthCostUsd === "number") {
-      if (typeof monthlyBudgetUsd === "number" && monthlyBudgetUsd > 0) {
-        const pct = Math.min(999, Math.round((monthCostUsd / monthlyBudgetUsd) * 100));
-        monthCostEl.textContent = `${usd(monthCostUsd)} / ${usd(monthlyBudgetUsd)}`;
-        monthNoteEl.textContent = `${pct}% · est.`;
-        budgetBarEl.hidden = false;
-        budgetFillEl.style.width = `${Math.min(100, pct)}%`;
-        // Status backed by the % label, never color alone.
-        budgetFillEl.style.background = pct >= 90 ? "var(--critical)" : pct >= 75 ? "var(--warn)" : "var(--good)";
-      } else {
-        monthCostEl.textContent = usd(monthCostUsd);
-        monthNoteEl.textContent = "est.";
-        budgetBarEl.hidden = true;
-      }
+    const acct = account && account.usage;
+    if (acct && typeof acct.usedUsd === "number") {
+      // Anthropic's own meter (the claude.ai usage page number): account-wide,
+      // billing-cycle-correct. The local estimate stays visible as a tooltip.
+      renderMonth(acct.usedUsd, acct.monthlyLimitUsd, account.error ? "account · stale" : "account");
+      monthCostEl.title = `this device, calendar month (est.): ${usd(monthCostUsd)}`;
+    } else if (typeof monthCostUsd === "number") {
+      renderMonth(monthCostUsd, monthlyBudgetUsd, "est.");
+      monthCostEl.title = "local transcript estimate — this device only";
     }
   } catch {
     /* daemon down; SSE reconnect will recover */
+  }
+}
+
+/** Month tile: value, optional "/$cap" + budget bar, and a source note ("account" or "est."). */
+function renderMonth(spentUsd, capUsd, note) {
+  if (typeof capUsd === "number" && capUsd > 0) {
+    const pct = Math.min(999, Math.round((spentUsd / capUsd) * 100));
+    monthCostEl.textContent = `${usd(spentUsd)} / ${usd(capUsd)}`;
+    monthNoteEl.textContent = `${pct}% · ${note}`;
+    budgetBarEl.hidden = false;
+    budgetFillEl.style.width = `${Math.min(100, pct)}%`;
+    // Status backed by the % label, never color alone.
+    budgetFillEl.style.background = pct >= 90 ? "var(--critical)" : pct >= 75 ? "var(--warn)" : "var(--good)";
+  } else {
+    monthCostEl.textContent = usd(spentUsd);
+    monthNoteEl.textContent = note;
+    budgetBarEl.hidden = true;
   }
 }
 

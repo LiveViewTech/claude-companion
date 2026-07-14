@@ -16,6 +16,7 @@ import { KeepWarm } from "./keepwarm.ts";
 import { Namer } from "./namer.ts";
 import { launchTerminal } from "./launcher.ts";
 import { computeExactAttribution } from "./attribution.ts";
+import { AccountUsagePoller } from "./account-usage.ts";
 
 export async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -30,6 +31,30 @@ export async function main(): Promise<void> {
   const watcher = new TranscriptWatcher(claudeProjectsDir(), tracker);
   const server = new Server(tracker, store, cfg.port);
   server.monthlyBudgetUsd = cfg.monthlyBudgetUsd;
+
+  // Account usage: the claude.ai meter itself, so the month tile matches the website.
+  let accountPoller: AccountUsagePoller | null = null;
+  if (cfg.accountUsage.enabled) {
+    // Log each window's resets_at changes so the REAL reset cadence is observable
+    // (the "seven_day" window empirically resets every ~72h — undocumented).
+    const lastResets = new Map<string, string>();
+    accountPoller = new AccountUsagePoller({
+      pollMs: Math.max(15, cfg.accountUsage.pollSeconds) * 1000,
+      onUpdate: (status) => {
+        for (const w of status.usage?.windows ?? []) {
+          if (!w.resetsAt) continue;
+          const prev = lastResets.get(w.name);
+          if (prev !== w.resetsAt) {
+            lastResets.set(w.name, w.resetsAt);
+            if (prev) store.logEvent("account_window_reset", null, { window: w.name, prev, next: w.resetsAt, utilization: w.utilization });
+          }
+        }
+      },
+    });
+    server.accountUsage = () => accountPoller!.status;
+    server.accountRaw = () => ({ status: accountPoller!.status, raw: accountPoller!.lastResponse });
+    accountPoller.start();
+  }
   server.turnSignal =
     cfg.turnSignal.enabled && cfg.turnSignal.flash
       ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
@@ -135,7 +160,11 @@ export async function main(): Promise<void> {
     return ok;
   };
   const guardianTimer = setInterval(() => {
-    for (const s of guardian.sweep()) stateWriter.writeSession(s);
+    const changed = guardian.sweep();
+    // Account-wide 5h/7d windows reach every active session — including VS Code
+    // extension sessions, which have no statusline to courier rate_limits.
+    if (accountPoller?.status.usage) changed.push(...guardian.applyAccountWindows(accountPoller.status.usage));
+    for (const s of new Set(changed)) stateWriter.writeSession(s);
   }, 15_000);
   guardianTimer.unref();
 
@@ -210,6 +239,7 @@ export async function main(): Promise<void> {
     try {
       fs.unlinkSync(pidFile);
     } catch { /* ignore */ }
+    accountPoller?.stop();
     await watcher.stop();
     server.close();
     store.close();
