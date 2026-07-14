@@ -78,11 +78,24 @@ describe("transcript adapter", () => {
     expect(entry.toolResults[0]?.resultChars).toBeGreaterThan(10);
   });
 
-  it("recognizes human prompts", () => {
+  it("recognizes human prompts and captures their text", () => {
     const { entry } = parseLine(HUMAN_PROMPT_LINE);
     if (entry?.kind !== "user") throw new Error("expected user");
     expect(entry.isHumanPrompt).toBe(true);
     expect(entry.promptChars).toBeGreaterThan(0);
+    expect(entry.promptText).toBe("please fix the failing test");
+  });
+
+  it("does not attach promptText to tool-result entries and caps huge prompts", () => {
+    const { entry } = parseLine(USER_TOOLRESULT_LINE);
+    if (entry?.kind !== "user") throw new Error("expected user");
+    expect(entry.promptText).toBeUndefined();
+    const big = parseLine(
+      JSON.stringify({ type: "user", uuid: "u-3", sessionId: "s", timestamp: "t", message: { role: "user", content: "x".repeat(5000) } }),
+    ).entry;
+    if (big?.kind !== "user") throw new Error("expected user");
+    expect(big.promptText?.length).toBe(2000);
+    expect(big.promptChars).toBe(5000);
   });
 
   it("maps unknown types to 'other' without failing", () => {

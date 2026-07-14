@@ -74,15 +74,27 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
 .card {
-  background: var(--surface-1);
+  /* Per-session accent (set inline as --session-color): a 5px left stripe plus a
+     tint so each session is recognizable at a glance without glowing. */
+  background: color-mix(in srgb, var(--session-color, var(--surface-1)) 10%, var(--surface-1));
   border: 1px solid var(--border);
+  border-left: 5px solid var(--session-color, var(--border));
   border-radius: 10px;
   padding: 14px 16px;
 }
 .card.stale { opacity: 0.55; }
 .card-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
-.proj { font-weight: 650; word-break: break-all; }
+.proj { font-weight: 650; word-break: break-word; }
+/* Named sessions carry the long description in title=; signal the hover like the stat labels do. */
+.proj.named[title]:not([title=""]) { cursor: help; text-decoration: underline dotted var(--grid); text-underline-offset: 3px; }
 .meta { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+.head-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+.open-btn {
+  font: inherit; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--ink-2); cursor: pointer; white-space: nowrap;
+}
+.open-btn:hover:not(:disabled) { color: var(--accent); border-color: currentColor; }
+.open-btn:disabled { cursor: default; opacity: 0.7; }
 .badge {
   font-size: 11px;
   font-weight: 650;
@@ -120,10 +132,16 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .stats dt[title] { cursor: help; text-decoration: underline dotted var(--grid); text-underline-offset: 3px; }
 .stats dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .stats dd.switch { font-weight: 400; font-size: 12px; color: var(--ink-2); }
-.stats dd.carry.carry-green { color: var(--good); }
-.stats dd.carry.carry-yellow { color: var(--warn); }
-.stats dd.carry.carry-red { color: var(--critical); }
+/* Carry value sits above a small, muted context-prefix line (folded in from its own row). */
+.stats dd.carry { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.stats dd.carry.carry-green .carry-val { color: var(--good); }
+.stats dd.carry.carry-yellow .carry-val { color: var(--warn); }
+.stats dd.carry.carry-red .carry-val { color: var(--critical); }
+.prefix-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
 .carry-models-row dd.carry-models { font-weight: 400; font-size: 12px; color: var(--ink-2); }
+/* Keep each model+cost together on its own line (JS renders one .carry-model-line per model). */
+.carry-model-line { white-space: nowrap; }
+.carry-models-row { align-items: start; }
 .carry-hint { font-size: 11px; }
 
 .feed-wrap h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 26px 0 8px; }
@@ -163,6 +181,24 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .verdict-none { color: var(--ink-2); }
 .verdict-nodata { color: var(--muted); }
 .rec { color: var(--ink-2); font-size: 12px; max-width: 480px; }
+
+/* Feature toggles panel. */
+.ctrl-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  align-items: center;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+.ctrl { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.ctrl input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.ctrl select {
+  font: inherit; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-1); cursor: pointer;
+}
 
 .kw-row dd { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .kw-btn {

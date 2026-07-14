@@ -57,6 +57,17 @@ function makeGuardian(cfg?: Partial<CccConfig["guardian"]>): Guardian {
   });
 }
 
+function makeAdvisor(
+  ackGuardian: (sid: string, action: string) => boolean,
+  advisor?: Partial<CccConfig["advisor"]>,
+): Advisor {
+  return new Advisor({
+    tracker,
+    cfg: { ...DEFAULTS, advisor: { ...DEFAULTS.advisor, ...advisor } },
+    ackGuardian,
+  });
+}
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-guardian-"));
   store = new Store(path.join(dir, "t.db"));
@@ -140,11 +151,20 @@ describe("Guardian", () => {
     expect(notifications.filter((n) => n.level === "notify")).toHaveLength(1);
     void g;
   });
+
+  it("off mode never notifies or arms, but still records the raw percentage", () => {
+    const g = makeGuardian({ action: "off" });
+    writeCourier(99);
+    g.sweep();
+    expect(notifications).toHaveLength(0);
+    expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
+    expect(tracker.get(SID)!.guardian.fiveHourPct).toBe(99); // dashboard still sees the number
+  });
 });
 
 describe("Advisor", () => {
   it("nudges plan-first for planning-shaped prompts, throttled", () => {
-    const advisor = new Advisor(tracker, () => false);
+    const advisor = makeAdvisor(() => false);
     const first = advisor.advise({ session_id: SID, prompt: "Help me design a new architecture for the ingest service" });
     expect(first.systemMessage).toMatch(/plan mode/);
     const second = advisor.advise({ session_id: SID, prompt: "now plan the migration of the database" });
@@ -152,7 +172,7 @@ describe("Advisor", () => {
   });
 
   it("stays silent on ordinary prompts", () => {
-    const advisor = new Advisor(tracker, () => false);
+    const advisor = makeAdvisor(() => false);
     expect(advisor.advise({ session_id: SID, prompt: "fix the typo in readme" })).toEqual({});
   });
 
@@ -160,12 +180,36 @@ describe("Advisor", () => {
     const g = makeGuardian();
     writeCourier(95);
     g.sweep();
-    const advisor = new Advisor(tracker, (sid, action) => g.ack(sid, action));
+    const advisor = makeAdvisor((sid, action) => g.ack(sid, action));
     const res = advisor.advise({ session_id: SID, prompt: "design a new plan for everything" });
     expect(res.additionalContext).toMatch(/HANDOFF\.md/);
     expect(res.systemMessage).toMatch(/guardian/);
     // pending cleared: next prompt gets no guardian content
     const res2 = advisor.advise({ session_id: SID, prompt: "hello again" });
     expect(res2.additionalContext).toBeUndefined();
+  });
+
+  it("when disabled, suppresses the plan nudge", () => {
+    const advisor = makeAdvisor(() => false, { enabled: false });
+    expect(advisor.advise({ session_id: SID, prompt: "Help me design a new architecture for the ingest service" })).toEqual({});
+  });
+
+  it("when disabled, STILL delivers the guardian instruction (that's a separate feature)", () => {
+    const g = makeGuardian();
+    writeCourier(95);
+    g.sweep();
+    const advisor = makeAdvisor((sid, action) => g.ack(sid, action), { enabled: false });
+    const res = advisor.advise({ session_id: SID, prompt: "hello" });
+    expect(res.additionalContext).toMatch(/HANDOFF\.md/);
+    expect(res.systemMessage).toMatch(/guardian/);
+  });
+
+  it("honors a custom nudgeEvery throttle", () => {
+    const advisor = makeAdvisor(() => false, { nudgeEvery: 2 });
+    expect(advisor.advise({ session_id: SID, prompt: "design a new system architecture" }).systemMessage).toMatch(/plan mode/);
+    // 2nd prompt: still within the 2-prompt throttle window
+    expect(advisor.advise({ session_id: SID, prompt: "plan a migration strategy" }).systemMessage).toBeUndefined();
+    // 3rd prompt: throttle window elapsed, nudges again
+    expect(advisor.advise({ session_id: SID, prompt: "architect a new service from scratch" }).systemMessage).toMatch(/plan mode/);
   });
 });

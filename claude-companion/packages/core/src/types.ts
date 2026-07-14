@@ -64,6 +64,9 @@ export interface UserEntry {
   /** True when this is a real human prompt (has plain text content, no tool results). */
   isHumanPrompt: boolean;
   promptChars: number;
+  /** First PROMPT_TEXT_CAP chars of a human prompt's text (for session naming). */
+  promptText?: string;
+  isSidechain?: boolean;
 }
 
 export interface OtherEntry {
@@ -87,6 +90,10 @@ export interface SessionState {
   cwd?: string;
   model?: string;
   ccVersion?: string;
+  /** Short human-readable session name (LLM-summarized from the user's prompts). */
+  name?: string;
+  /** Longer description of the session's intent, updated as it evolves. */
+  nameDescription?: string;
   /** TTL tier of the most recent cache write. */
   ttlTier: TtlTier | null;
   /** Epoch ms when the cache expires (last activity + TTL). Null when unknown. */

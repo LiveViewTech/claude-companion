@@ -63,6 +63,7 @@ export class KeepWarm {
 
   /** Why keep-warm must NOT run right now; null = allowed. */
   private gate(state: SessionState): string | null {
+    if (!this.cfg.keepwarm.enabled) return "keep-warm disabled in settings";
     if (state.ttlTier !== "5m") {
       return state.ttlTier === "1h"
         ? "session is on the 1h TTL (subscription) — nothing to keep warm"

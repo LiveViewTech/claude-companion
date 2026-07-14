@@ -6,7 +6,7 @@ import { parseLine } from "@ccc/core";
 import { Store } from "../src/store.ts";
 import { SessionTracker } from "../src/session-tracker.ts";
 import { KeepWarm } from "../src/keepwarm.ts";
-import { computeExactAttribution, classStats, rtkVerdict } from "../src/attribution.ts";
+import { computeExactAttribution, classStats } from "../src/attribution.ts";
 import { DEFAULTS } from "../src/config.ts";
 
 let dir: string;
@@ -77,6 +77,19 @@ afterEach(() => {
 });
 
 describe("KeepWarm gates", () => {
+  it("refuses to arm when keep-warm is disabled in config", () => {
+    const kw = new KeepWarm({
+      tracker,
+      store,
+      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, enabled: false } },
+      onEvent: (kind, sid) => events.push({ kind, sid }),
+    });
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w5: 100_000 }), "proj", true);
+    const res = kw.setArmed(SID, true) as { armed: boolean; reason: string };
+    expect(res.armed).toBe(false);
+    expect(res.reason).toMatch(/disabled/);
+  });
+
   it("refuses to arm on the 1h tier with an explanation", () => {
     tracker.ingest(turn({ uuid: "a", ts: "2026-07-11T10:00:00.000Z", w1h: 100_000 }), "proj", false);
     const res = keepwarm.setArmed(SID, true) as { armed: boolean; reason: string };
@@ -148,7 +161,7 @@ describe("KeepWarm gates", () => {
 });
 
 describe("Attribution", () => {
-  it("computes exact tokens for single-tool turns and class stats + rtk verdict", () => {
+  it("computes exact tokens for single-tool turns and class stats", () => {
     // Turn 1 issues one Bash call; prefix 100_000, output 100.
     tracker.ingest(
       turn({ uuid: "t1", ts: "2026-07-11T10:00:00.000Z", read: 0, w5: 100_000, input: 0, output: 100, tools: [{ id: "tu1", command: "git status" }] }),
@@ -168,8 +181,6 @@ describe("Attribution", () => {
     const stats = classStats(store);
     expect(stats[0]!.commandClass).toBe("git status");
     expect(stats[0]!.medianChars).toBe(8000);
-
-    const verdict = rtkVerdict(store);
-    expect(verdict[0]!.verdict).toBe("insufficient data"); // n=1 < 20 gate
+    expect(stats[0]!.rtkWrapped).toBe(false);
   });
 });

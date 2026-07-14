@@ -48,6 +48,14 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
 
 - **Cache countdown** — statusline `⏱ 4:37 (5m)` and dashboard ring, computed from the
   *observed* TTL tier of the last cache write; toast at T-60s with the cold re-write $ you'd pay.
+- **Session naming** — each card is titled with an AI summary of the session's intent
+  (hover the name for a paragraph-long description). The daemon runs `claude -p` headless
+  through a toolless custom agent on a cheap model (~1.3k input tokens/call, measured);
+  the first prompt names the session, later prompts re-title it only when they meaningfully
+  extend the intent. Toggle: `naming.enabled` / dashboard Controls.
+- **Open in terminal** — the card's **⧉ open** button pops a terminal window in the
+  session's cwd running `claude --resume <session>` (Windows Terminal → cmd fallback;
+  macOS Terminal; common Linux emulators).
 - **Cost visibility** — per-session and per-day $ from transcript usage × date-aware pricing;
   cold re-writes are detected and billed to a weekly "expiry cost you $X" number.
 - **Keep-warm (experimental, API-billing only)** — arm per session in the dashboard; a Stop hook
@@ -74,9 +82,23 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
   "toasts": true,
   "warnBeforeSeconds": 60,
   "guardian": { "action": "handoff", "notifyPct": 80, "actPct": 90 },
-  "keepwarm": { "maxPingsPerIdle": 12 }
+  "keepwarm": { "enabled": true, "maxPingsPerIdle": 12 },
+  "advisor": { "enabled": true, "nudgeEvery": 10 },
+  "naming": { "enabled": true, "model": "haiku" }
 }
 ```
+
+Turning the optional features on/off:
+
+- **Keep-warm** — `keepwarm.enabled` (master switch; even when `true` it's opt-in per
+  session via the dashboard **arm** button). Set `false` to hard-disable.
+- **Advisor** (plan-first nudge) — `advisor.enabled`; `advisor.nudgeEvery` throttles how
+  often it can fire per session. This is separate from the guardian's wrap-up delivery.
+- **Session naming** — `naming.enabled`; `naming.model` is passed to `claude -p --model`.
+- **Rate-limit guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`.
+
+All four are also live-togglable from the dashboard **Controls** panel (writes `config.json`
+and takes effect immediately, no daemon restart).
 
 ## Cache economics cheat-sheet (why this exists)
 
@@ -88,7 +110,7 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
 ## Development
 
 ```sh
-npm test          # vitest (41 tests: adapter, economics, tailer, tracker, guardian, keep-warm, attribution)
+npm test          # vitest (91 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls)
 npm run typecheck
 ```
 

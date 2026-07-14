@@ -94,6 +94,17 @@ export class Store {
         value TEXT
       );
     `);
+    // Column additions to pre-existing tables (CREATE IF NOT EXISTS won't add them).
+    this.addColumn("sessions", "name", "TEXT");
+    this.addColumn("sessions", "name_desc", "TEXT");
+    this.addColumn("sessions", "name_prompts", "INTEGER DEFAULT 0");
+  }
+
+  private addColumn(table: string, column: string, decl: string): void {
+    const cols = this.db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    }
   }
 
   upsertSession(s: {
@@ -172,6 +183,21 @@ export class Store {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(c.toolUseId, c.sessionId, c.turnUuid, c.ts, c.toolName, c.command ?? null, c.commandClass ?? null, c.rtkWrapped ? 1 : 0);
+  }
+
+  /** Persist an LLM-generated session name. `promptCount` = prompts seen when named (rename watermark). */
+  setSessionName(id: string, name: string, desc: string, promptCount: number): void {
+    this.db
+      .prepare(`UPDATE sessions SET name = ?, name_desc = ?, name_prompts = ? WHERE id = ?`)
+      .run(name, desc, promptCount, id);
+  }
+
+  getSessionName(id: string): { name?: string; desc?: string; prompts: number } | null {
+    const row = this.db
+      .prepare(`SELECT name, name_desc AS desc, name_prompts AS prompts FROM sessions WHERE id = ?`)
+      .get(id) as { name: string | null; desc: string | null; prompts: number | null } | undefined;
+    if (!row) return null;
+    return { name: row.name ?? undefined, desc: row.desc ?? undefined, prompts: row.prompts ?? 0 };
   }
 
   setToolResultChars(toolUseId: string, chars: number): void {

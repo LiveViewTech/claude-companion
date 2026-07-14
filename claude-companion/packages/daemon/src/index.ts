@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { appPaths, claudeProjectsDir } from "@ccc/core";
-import { loadConfig } from "./config.ts";
+import { loadConfig, saveConfig } from "./config.ts";
+import { applyConfigUpdate, type ConfigUpdate } from "./config-runtime.ts";
 import { Store } from "./store.ts";
 import { SessionTracker } from "./session-tracker.ts";
 import { TranscriptWatcher } from "./watcher.ts";
@@ -12,6 +13,8 @@ import { toast } from "./notify.ts";
 import { Guardian } from "./guardian.ts";
 import { Advisor } from "./advisor.ts";
 import { KeepWarm } from "./keepwarm.ts";
+import { Namer } from "./namer.ts";
+import { launchTerminal } from "./launcher.ts";
 import { computeExactAttribution } from "./attribution.ts";
 
 export async function main(): Promise<void> {
@@ -34,6 +37,23 @@ export async function main(): Promise<void> {
   // NOTE: sound is played by the turn-signal HOOK, never the daemon. A detached background
   // process (the daemon) can't reach the interactive audio session, so daemon-side playback is
   // silent — verified live. The hook runs as a child of Claude Code in the user's session and can.
+
+  // Session naming: every human prompt feeds the namer; its own `claude -p` runs execute in
+  // state/namer, which is hidden from the dashboard (they'd otherwise name themselves forever).
+  const namerDir = path.join(paths.state, "namer");
+  const namer = new Namer({ tracker, store, cfg, namerDir });
+  tracker.on("humanPrompt", (e) => namer.notePrompt(e));
+  server.hideSessionsUnder = namerDir;
+
+  // Dashboard "open" button: terminal window in the session's cwd running `claude --resume`.
+  server.handlers.launchSession = async (sessionId) => {
+    if (!/^[0-9a-zA-Z_-]{8,64}$/.test(sessionId)) return { ok: false, error: "bad session id" };
+    const s = tracker.get(sessionId);
+    if (!s) return { ok: false, error: "unknown session" };
+    if (!s.cwd) return { ok: false, error: "no working directory recorded for this session" };
+    store.logEvent("session_launch", sessionId, { cwd: s.cwd });
+    return launchTerminal({ cwd: s.cwd, sessionId });
+  };
 
   // Wire toasts + state files.
   tracker.on("state", (s) => stateWriter.writeSession(s));
@@ -92,11 +112,15 @@ export async function main(): Promise<void> {
       if (s) stateWriter.writeSession(s);
     },
   });
-  const advisor = new Advisor(tracker, (sid, action) => {
-    const ok = guardian.ack(sid, action);
-    const s = tracker.get(sid);
-    if (ok && s) stateWriter.writeSession(s);
-    return ok;
+  const advisor = new Advisor({
+    tracker,
+    cfg,
+    ackGuardian: (sid, action) => {
+      const ok = guardian.ack(sid, action);
+      const s = tracker.get(sid);
+      if (ok && s) stateWriter.writeSession(s);
+      return ok;
+    },
   });
   server.handlers.advise = (body) =>
     advisor.advise({
@@ -139,6 +163,34 @@ export async function main(): Promise<void> {
     breakEven: keepwarm.breakEvenFor(sid),
     pingCostUsd: keepwarm.pingCostFor(sid),
   });
+
+  // Live feature toggles from the dashboard. applyConfigUpdate mutates the shared cfg
+  // object IN PLACE — every engine (guardian/keepwarm/advisor) holds this same reference,
+  // so a flip takes effect on their next call, no restart. It reports which features were
+  // just switched off so we can tear down in-flight state (the dashboard then reflects it
+  // at once), then we persist to config.json.
+  server.handlers.getConfig = () => cfg;
+  server.handlers.setConfig = (updates) => {
+    const effects = applyConfigUpdate(cfg, updates as ConfigUpdate);
+    if (effects.keepwarmDisabled) {
+      for (const s of tracker.all) {
+        if (s.keepwarm.armed) {
+          keepwarm.setArmed(s.sessionId, false);
+          stateWriter.writeSession(s);
+        }
+      }
+    }
+    if (effects.guardianDisabled) {
+      for (const s of tracker.all) {
+        if (s.guardian.pendingAction) {
+          s.guardian.pendingAction = null;
+          stateWriter.writeSession(s);
+        }
+      }
+    }
+    saveConfig(cfg);
+    return cfg;
+  };
   const attributionTimer = setInterval(() => {
     try {
       computeExactAttribution(store);

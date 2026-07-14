@@ -1,3 +1,4 @@
+import type { CccConfig } from "./config.ts";
 import type { SessionTracker } from "./session-tracker.ts";
 
 export interface AdviseRequest {
@@ -28,18 +29,23 @@ const GUARDIAN_CONTEXT = {
 /**
  * In-memory prompt advisor. Pure heuristics — no model calls; must answer in
  * single-digit milliseconds because a hook blocks on it.
- * Throttle: at most one nudge per NUDGE_EVERY prompts per session.
+ * Throttle: at most one plan nudge per cfg.advisor.nudgeEvery prompts per session.
  */
 export class Advisor {
   private tracker: SessionTracker;
+  private cfg: CccConfig;
   private promptCounts = new Map<string, number>();
   private lastNudgeAt = new Map<string, number>();
   private ackGuardian: (sessionId: string, action: string) => boolean;
-  static NUDGE_EVERY = 10;
 
-  constructor(tracker: SessionTracker, ackGuardian: (sessionId: string, action: string) => boolean) {
-    this.tracker = tracker;
-    this.ackGuardian = ackGuardian;
+  constructor(opts: {
+    tracker: SessionTracker;
+    cfg: CccConfig;
+    ackGuardian: (sessionId: string, action: string) => boolean;
+  }) {
+    this.tracker = opts.tracker;
+    this.cfg = opts.cfg;
+    this.ackGuardian = opts.ackGuardian;
   }
 
   advise(req: AdviseRequest): AdviseResponse {
@@ -49,7 +55,9 @@ export class Advisor {
     this.promptCounts.set(req.session_id, n);
 
     // 1) Guardian delivery rides along with the next prompt (whichever surface
-    //    fires first acks; the other then sees pending == null).
+    //    fires first acks; the other then sees pending == null). This is part of the
+    //    rate-limit guardian (governed by guardian.action), NOT the advisor toggle —
+    //    it must keep working even when the plan nudge is switched off.
     const pending = state?.guardian.pendingAction;
     if (pending && this.ackGuardian(req.session_id, pending)) {
       res.additionalContext = GUARDIAN_CONTEXT[pending];
@@ -58,9 +66,10 @@ export class Advisor {
       return res; // guardian outranks nudges; never stack messages
     }
 
-    // 2) Plan-first nudge for planning-shaped prompts early in a session.
+    // 2) Plan-first nudge for planning-shaped prompts early in a session. Master-switchable.
+    if (!this.cfg.advisor.enabled) return res;
     const last = this.lastNudgeAt.get(req.session_id) ?? -Infinity;
-    const throttled = n - last < Advisor.NUDGE_EVERY;
+    const throttled = n - last < this.cfg.advisor.nudgeEvery;
     const planShaped = PLANNING_RE.test(req.prompt) || req.prompt.length > 600;
     const earlySession = (state?.turns ?? 0) < 8;
     if (planShaped && earlySession && !throttled) {

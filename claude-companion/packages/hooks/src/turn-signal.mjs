@@ -19,7 +19,9 @@ const POST_TIMEOUT_MS = 800;
 const SOUND_TIMEOUT_MS = 7000;
 // Leading silence (ms) played before the real sound on Windows: the audio endpoint wakes during
 // the silence instead of clipping the start of the sound ("I only hear the end"). 0 disables it.
-const HOOK_DEFAULTS = { enabled: true, sound: true, soundLeadMs: 1200, sounds: { done: "", question: "", permission: "" } };
+// 750ms gives the device enough spin-up to stop clipping the sound's start; lower
+// turnSignal.soundLeadMs to tighten the flash->sound gap, raise it if clipping returns.
+const HOOK_DEFAULTS = { enabled: true, sound: true, soundLeadMs: 750, sounds: { done: "", question: "", permission: "" } };
 
 function baseDir(kind) {
   const env = process.env;
@@ -242,6 +244,9 @@ function post(port, urlPath, payload) {
 }
 
 async function main() {
+  // Headless naming runs spawned by the ccc daemon set CCC_NAMER=1 — they must
+  // never flash the dashboard or play "your turn" sounds.
+  if (process.env.CCC_NAMER === "1") process.exit(0);
   let input = {};
   try {
     input = JSON.parse(fs.readFileSync(0, "utf8"));

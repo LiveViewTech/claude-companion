@@ -35,6 +35,33 @@
   <section id="sessions" class="cards" aria-live="polite"></section>
 
   <section class="feed-wrap">
+    <h2>Controls <span class="soft">(saved to config.json; take effect immediately)</span></h2>
+    <div class="ctrl-grid">
+      <label class="ctrl" title="Master switch for cache keep-warm pings. When off, sessions can't be armed (the button above refuses). Keep-warm is opt-in per session even when this is on.">
+        <input type="checkbox" id="ctrl-keepwarm" />
+        <span>Keep-warm <span class="soft">— allow cache-keeping pings</span></span>
+      </label>
+      <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the rate-limit guardian.">
+        <input type="checkbox" id="ctrl-advisor" />
+        <span>Plan-first advisor <span class="soft">— nudge to plan mode</span></span>
+      </label>
+      <label class="ctrl" title="Summarizes each session's prompts into the card's name (hover the name for a longer description). Runs `claude -p` headless on a cheap model via your existing claude login — a few tiny calls per active session per hour.">
+        <input type="checkbox" id="ctrl-naming" />
+        <span>Session naming <span class="soft">— AI names on cards</span></span>
+      </label>
+      <label class="ctrl" title="Watches your subscription rate limits and, near the cap, notifies and (optionally) asks Claude to capture context / write a handoff.">
+        <span>Rate-limit guardian</span>
+        <select id="ctrl-guardian">
+          <option value="off">off</option>
+          <option value="notify-only">notify only</option>
+          <option value="wrapup">notify + wrap up</option>
+          <option value="handoff">notify + handoff</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="feed-wrap">
     <h2>Cache economics <span id="cold-week" class="soft"></span></h2>
     <div id="habits" class="table-wrap"></div>
   </section>
@@ -47,8 +74,6 @@
   <section class="feed-wrap">
     <h2>rtk <span class="soft">(Rust Token Killer — command-output compression)</span></h2>
     <div id="rtk-gain" class="rtk-gain"></div>
-    <div id="rtk" class="table-wrap"></div>
-    <div class="soft rtk-note">The A/B table is measured from transcripts, which record the command <em>before</em> rtk's hook rewrites it — so hook-rewritten <code>rtk</code> calls never appear here, and rows stay “insufficient data”. The bar above is rtk's own measurement and is the real signal that it's working.</div>
   </section>
 
   <section class="feed-wrap">
@@ -62,9 +87,12 @@
     <div class="card-head">
       <div>
         <div class="proj"></div>
-        <div class="meta"><span class="model"></span> · <span class="turns"></span></div>
+        <div class="meta"><span class="slug"></span><span class="model"></span> · <span class="turns"></span></div>
       </div>
-      <span class="badge tier"></span>
+      <div class="head-actions">
+        <span class="badge tier"></span>
+        <button class="open-btn" type="button" title="Open a terminal in this session's directory and resume it">⧉ open</button>
+      </div>
     </div>
     <div class="card-body">
       <div class="ring-wrap">
@@ -79,8 +107,7 @@
       </div>
       <dl class="stats">
         <div><dt title="Total API list-price cost of this session so far — input + output + cache reads and writes. Same basis as Claude Code's own /cost.">Session cost</dt><dd class="cost">–</dd></div>
-        <div><dt title="How big the conversation context is right now: the tokens re-sent (and re-read from cache) on every single turn. Grows as the chat gets longer.">Context prefix</dt><dd class="prefix">–</dd></div>
-        <div><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Carry / turn <span class="soft carry-hint"></span></dt><dd class="carry">–</dd></div>
+        <div><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Carry / turn <span class="soft carry-model"></span> <span class="soft carry-hint"></span></dt><dd class="carry"><span class="carry-val">–</span><span class="prefix-sub" title="Context prefix — how big the conversation is now: tokens re-sent and re-read from cache every turn. Grows as the chat gets longer.">–</span></dd></div>
         <div class="carry-models-row"><dt title="The same per-turn carry cost if this session were running on other models (caches are priced per model).">…by model</dt><dd class="carry-models">–</dd></div>
         <div><dt title="What you'd pay to rebuild the whole cache from scratch if it expires before your next prompt — a full cache write at 1.25× (5-min) to 2× (1-hour) the input rate. Shown as a warning of what idling past the countdown costs.">Cold re-write</dt><dd class="rewrite">–</dd></div>
         <div><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
@@ -91,5 +118,9 @@
 </template>
 
 <script src="/app.js"></script>
+<script type="module">
+  import { initControls } from "/controls.js";
+  initControls();
+</script>
 </body>
 </html>

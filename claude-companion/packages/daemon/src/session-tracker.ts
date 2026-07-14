@@ -22,6 +22,8 @@ export interface TrackerEvents {
   state: [SessionState];
   /** Every live-ingested assistant turn (keep-warm judges ping turns here). */
   assistantTurn: [{ sessionId: string; entry: Extract<Entry, { kind: "assistant" }> }];
+  /** Every human prompt, backfill included (live=false), for the session namer. */
+  humanPrompt: [{ sessionId: string; text: string; ts: number; cwd?: string; live: boolean }];
   /** Cold cache re-write detected (money burned). */
   coldRewrite: [{ sessionId: string; costUsd: number; gapSeconds: number }];
   /** Cache is about to expire while the session sits idle. */
@@ -59,7 +61,7 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
   /** Ingest one entry from `projectSlug`'s transcript. `live` gates timers/toasts (false during backfill). */
   ingest(entry: Entry, projectSlug: string, live: boolean): void {
     if (entry.kind === "assistant") this.ingestAssistant(entry, projectSlug, live);
-    else if (entry.kind === "user") this.ingestUser(entry);
+    else if (entry.kind === "user") this.ingestUser(entry, live);
   }
 
   private ingestAssistant(entry: Extract<Entry, { kind: "assistant" }>, projectSlug: string, live: boolean): void {
@@ -180,12 +182,34 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
     }
   }
 
-  private ingestUser(entry: Extract<Entry, { kind: "user" }>): void {
+  private ingestUser(entry: Extract<Entry, { kind: "user" }>, live: boolean): void {
     for (const tr of entry.toolResults) {
       this.store.setToolResultChars(tr.toolUseId, tr.resultChars);
     }
-    // Human prompt = activity; a cache read will follow on the assistant turn,
-    // so countdown updates arrive with that turn. Nothing else to do here.
+    // Human prompt = activity; a cache read will follow on the assistant turn, so
+    // countdown updates arrive with that turn. Sidechain "user" entries are subagent
+    // prompts, not the human — they must not influence session naming.
+    if (entry.isHumanPrompt && entry.promptText && entry.sessionId && !entry.isSidechain) {
+      const ts = Date.parse(entry.timestamp);
+      this.emit("humanPrompt", {
+        sessionId: entry.sessionId,
+        text: entry.promptText,
+        ts: Number.isFinite(ts) ? ts : Date.now(),
+        cwd: entry.cwd,
+        live,
+      });
+    }
+  }
+
+  /** Set the LLM-generated name on live state and notify the dashboard. False if the session is unknown (yet). */
+  applyName(sessionId: string, name: string, description: string): boolean {
+    const state = this.sessions.get(sessionId);
+    if (!state) return false;
+    state.name = name;
+    state.nameDescription = description;
+    state.updatedAt = Date.now();
+    this.emit("state", state);
+    return true;
   }
 
   /** Restore cumulative counters from the DB after a restart (before live tailing). */
@@ -193,16 +217,18 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
     const rows = this.store.db
       .prepare(
         `SELECT t.session_id AS sid, s.project_slug AS slug, s.cwd AS cwd, s.cc_version AS ver, s.last_model AS model,
-                s.billing_tier_last AS tier,
+                s.billing_tier_last AS tier, s.name AS name, s.name_desc AS nameDesc,
                 SUM(t.cost_usd) AS cost, COUNT(*) AS turns, MAX(t.ts) AS last_ts
          FROM turns t JOIN sessions s ON s.id = t.session_id
          GROUP BY t.session_id`,
       )
-      .all() as Array<{ sid: string; slug: string; cwd: string | null; ver: string | null; model: string | null; tier: string | null; cost: number; turns: number; last_ts: number }>;
+      .all() as Array<{ sid: string; slug: string; cwd: string | null; ver: string | null; model: string | null; tier: string | null; name: string | null; nameDesc: string | null; cost: number; turns: number; last_ts: number }>;
     for (const r of rows) {
       const state = this.newState(r.sid, r.slug);
       state.cwd = r.cwd ?? undefined;
       state.ccVersion = r.ver ?? undefined;
+      state.name = r.name ?? undefined;
+      state.nameDescription = r.nameDesc ?? undefined;
       state.model = r.model ?? undefined;
       state.ttlTier = (r.tier as TtlTier | null) ?? null;
       state.sessionCostUsd = r.cost;

@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 import type { SessionState } from "@ccc/core";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
-import { classStats, computeExactAttribution, rtkVerdict, toolLeaderboard } from "./attribution.ts";
+import { classStats, computeExactAttribution, toolLeaderboard } from "./attribution.ts";
 import { rtkGain } from "./rtk-gain.ts";
 import { coldRewriteSummary, projectHabits } from "./habits.ts";
+
+/** Case/separator-insensitive path equality (Windows transcripts mix `\` and `/`). */
+function normPath(p: string): string {
+  return path.resolve(p).replace(/\\/g, "/").toLowerCase();
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -31,6 +36,8 @@ export class Server {
   private port: number;
   /** Monthly spend cap (USD) for the dashboard "this month" tile; null = no cap. Set by index.ts. */
   monthlyBudgetUsd: number | null = null;
+  /** Sessions whose cwd is this directory are hidden from the dashboard (the namer's own `claude -p` runs). */
+  hideSessionsUnder: string | null = null;
   /** Dashboard flash config for the "it's your turn" signal; null = flashing off. Set by index.ts. */
   turnSignal: { flashColor: string; flashMs: number } | null = null;
   /** Per-session debounce for /turn so a burst of Stop/Notification hooks flashes once. */
@@ -43,6 +50,12 @@ export class Server {
     keepwarmAuthorize?: (sessionId: string) => { ping: boolean; reason?: string };
     keepwarmSetArmed?: (sessionId: string, armed: boolean) => unknown;
     keepwarmBreakEven?: (sessionId: string) => unknown;
+    /** Current daemon config (for the dashboard controls). */
+    getConfig?: () => unknown;
+    /** Apply a partial config update live and persist it; returns the new config. */
+    setConfig?: (updates: Record<string, unknown>) => unknown;
+    /** Open a terminal resuming this session (dashboard "open" button). */
+    launchSession?: (sessionId: string) => Promise<unknown> | unknown;
   } = {};
 
   constructor(tracker: SessionTracker, store: Store, port: number) {
@@ -53,7 +66,9 @@ export class Server {
     this.publicDir = path.resolve(here, "../../dashboard/public");
     this.server = http.createServer((req, res) => this.route(req, res));
 
-    tracker.on("state", (s) => this.broadcast("state", s));
+    tracker.on("state", (s) => {
+      if (!this.isHidden(s)) this.broadcast("state", s);
+    });
     tracker.on("coldRewrite", (e) => this.broadcast("coldRewrite", e));
     tracker.on("expiryWarning", (e) => this.broadcast("expiryWarning", e));
     tracker.on("expired", (e) => this.broadcast("expired", e));
@@ -89,10 +104,9 @@ export class Server {
         return void this.json(res, { leaderboard: toolLeaderboard(this.store), classes: classStats(this.store) });
       }
       if (p === "/api/rtk") {
-        computeExactAttribution(this.store);
-        // gain = rtk's own measured savings (ground truth — the transcript-derived
-        // verdict can't see hook-rewritten commands; see rtk-gain.ts).
-        return void this.json(res, { verdict: rtkVerdict(this.store), gain: rtkGain() });
+        // rtk's own measured savings (ground truth — the transcript can't see
+        // hook-rewritten commands, so there's no meaningful A/B; see rtk-gain.ts).
+        return void this.json(res, { gain: rtkGain() });
       }
       if (p === "/api/habits") {
         const weekAgo = Date.now() - 7 * 86_400_000;
@@ -102,6 +116,7 @@ export class Server {
         const sid = url.searchParams.get("session_id") ?? "";
         return void this.json(res, this.handlers.keepwarmBreakEven?.(sid) ?? null);
       }
+      if (p === "/api/config") return void this.json(res, this.handlers.getConfig?.() ?? {});
       if (p === "/events") return void this.sse(res);
       if (req.method === "POST" && p === "/advise") return void this.post(req, res, (b) => this.handlers.advise?.(b) ?? {});
       if (req.method === "POST" && p === "/guardian/ack")
@@ -110,6 +125,10 @@ export class Server {
         return void this.post(req, res, (b) => this.handlers.keepwarmAuthorize?.(String(b["session_id"] ?? "")) ?? { ping: false, reason: "keep-warm not available" });
       if (req.method === "POST" && p === "/keepwarm/arm")
         return void this.post(req, res, (b) => this.handlers.keepwarmSetArmed?.(String(b["session_id"] ?? ""), Boolean(b["armed"])) ?? { error: "not available" });
+      if (req.method === "POST" && p === "/config")
+        return void this.post(req, res, (b) => this.handlers.setConfig?.(b) ?? { error: "not available" });
+      if (req.method === "POST" && p === "/session/launch")
+        return void this.post(req, res, (b) => this.handlers.launchSession?.(String(b["session_id"] ?? "")) ?? { ok: false, error: "not available" });
       if (req.method === "POST" && p === "/turn") return void this.post(req, res, (b) => this.handleTurn(b));
       if (p.startsWith("/api/")) return void this.json(res, { error: "not found" }, 404);
       return void this.static(p === "/" ? "/index.html" : p, res);
@@ -118,7 +137,7 @@ export class Server {
     }
   }
 
-  /** Read a JSON body (64KB cap) and answer with the handler's JSON result. */
+  /** Read a JSON body (64KB cap) and answer with the handler's JSON result (promises awaited). */
   private post(req: http.IncomingMessage, res: http.ServerResponse, handler: (body: Record<string, unknown>) => unknown): void {
     let data = "";
     let overflow = false;
@@ -137,17 +156,25 @@ export class Server {
       } catch {
         return void this.json(res, { error: "bad json" }, 400);
       }
-      try {
-        this.json(res, handler(body) ?? {});
-      } catch (e) {
-        this.json(res, { error: String(e) }, 500);
-      }
+      void (async () => {
+        try {
+          this.json(res, (await handler(body)) ?? {});
+        } catch (e) {
+          this.json(res, { error: String(e) }, 500);
+        }
+      })();
     });
+  }
+
+  /** Namer `claude -p` runs are real sessions on disk but noise on the dashboard. */
+  private isHidden(s: SessionState): boolean {
+    if (!this.hideSessionsUnder || !s.cwd) return false;
+    return normPath(s.cwd) === normPath(this.hideSessionsUnder);
   }
 
   private sessionsPayload(): { sessions: SessionState[]; now: number } {
     const sessions = this.tracker.all
-      .filter((s) => s.lastTurnAt != null)
+      .filter((s) => s.lastTurnAt != null && !this.isHidden(s))
       .sort((a, b) => (b.lastTurnAt ?? 0) - (a.lastTurnAt ?? 0))
       .slice(0, 50);
     return { sessions, now: Date.now() };

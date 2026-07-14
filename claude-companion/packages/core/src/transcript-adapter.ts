@@ -66,16 +66,21 @@ function parseAssistant(o: Record<string, unknown>): AssistantTurn {
   };
 }
 
+/** Keep enough prompt text for session naming without bloating memory on huge pastes. */
+const PROMPT_TEXT_CAP = 2000;
+
 function parseUser(o: Record<string, unknown>): Entry {
   const message = obj(o["message"]) ?? {};
   const content = message["content"];
   const toolResults: ToolResultInfo[] = [];
   let promptChars = 0;
   let hasText = false;
+  let promptText = "";
 
   if (typeof content === "string") {
     promptChars = content.length;
     hasText = content.trim().length > 0;
+    promptText = content.slice(0, PROMPT_TEXT_CAP);
   } else if (Array.isArray(content)) {
     for (const block of content) {
       const b = obj(block);
@@ -87,19 +92,23 @@ function parseUser(o: Record<string, unknown>): Entry {
         const t = str(b["text"]) ?? "";
         promptChars += t.length;
         if (t.trim()) hasText = true;
+        if (promptText.length < PROMPT_TEXT_CAP) promptText += t.slice(0, PROMPT_TEXT_CAP - promptText.length);
       }
     }
   }
 
+  const isHumanPrompt = hasText && toolResults.length === 0;
   return {
     kind: "user",
     uuid: str(o["uuid"]) ?? cryptoFallbackId(o),
     sessionId: str(o["sessionId"]) ?? "",
     timestamp: str(o["timestamp"]) ?? "",
     toolResults,
-    isHumanPrompt: hasText && toolResults.length === 0,
+    isHumanPrompt,
     promptChars,
+    ...(isHumanPrompt ? { promptText: promptText.trim() } : {}),
     cwd: str(o["cwd"]),
+    isSidechain: bool(o["isSidechain"]),
   };
 }
 

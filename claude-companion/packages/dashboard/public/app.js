@@ -17,6 +17,38 @@ const sessions = new Map();
 /** sessionId -> card element */
 const cards = new Map();
 
+/** Accent palette: 8 clearly-distinct hues, hue-hopped so consecutively-assigned
+    sessions look maximally different (only one blue, one cyan — kept far apart).
+    Saturated enough to read on a dark theme without glowing. Repeats past 8 sessions. */
+const SESSION_COLORS = [
+  "#4f8fef", // blue
+  "#e8863c", // orange
+  "#57b368", // green
+  "#e05c9e", // pink
+  "#d9b13a", // gold
+  "#9a6cf0", // purple
+  "#e5544b", // red
+  "#2fb8be", // cyan
+];
+/** sessionId -> palette index. Stable per session so its color survives re-sorts and re-renders. */
+const sessionColorIdx = new Map();
+
+/** Assign (and remember) the least-used palette color among currently-visible sessions,
+    so up to 8 live sessions stay distinguishable; ties break to the lowest index. */
+function colorForSession(id, visibleIds) {
+  let idx = sessionColorIdx.get(id);
+  if (idx != null) return SESSION_COLORS[idx];
+  const counts = new Array(SESSION_COLORS.length).fill(0);
+  for (const vid of visibleIds) {
+    const vi = sessionColorIdx.get(vid);
+    if (vi != null) counts[vi]++;
+  }
+  idx = 0;
+  for (let i = 1; i < counts.length; i++) if (counts[i] < counts[idx]) idx = i;
+  sessionColorIdx.set(id, idx);
+  return SESSION_COLORS[idx];
+}
+
 const RING_CIRC = 2 * Math.PI * 42; // r=42 in the SVG
 const ACTIVE_WINDOW_MS = 6 * 3600_000; // hide sessions idle > 6h
 const usd = (v) => (v >= 0.995 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`);
@@ -89,6 +121,7 @@ function visibleSessions() {
 function renderAll() {
   const list = visibleSessions();
   activeEl.textContent = String(list.length);
+  const visibleIds = new Set(list.map((s) => s.sessionId));
   const seen = new Set();
   for (const s of list) {
     seen.add(s.sessionId);
@@ -96,14 +129,18 @@ function renderAll() {
     if (!card) {
       card = tpl.content.firstElementChild.cloneNode(true);
       cards.set(s.sessionId, card);
-      sessionsEl.appendChild(card);
     }
     fillCard(card, s);
+    card.style.setProperty("--session-color", colorForSession(s.sessionId, visibleIds));
+    // Re-append in sorted order: appendChild moves an existing node, so this keeps
+    // the DOM ordered by lastTurnAt (newest first) even as sessions update live.
+    sessionsEl.appendChild(card);
   }
   for (const [id, card] of cards) {
     if (!seen.has(id)) {
       card.remove();
       cards.delete(id);
+      sessionColorIdx.delete(id); // free the color for reuse
     }
   }
   if (list.length === 0 && !sessionsEl.querySelector(".empty")) {
@@ -114,37 +151,55 @@ function renderAll() {
   }
 }
 
+/** Render "model cost" pairs one per line (each nowrap in CSS) into el, or "–" when empty. */
+function fillModelLines(el, entries) {
+  el.textContent = "";
+  if (!entries.length) {
+    el.textContent = "–";
+    return;
+  }
+  for (const [m, c] of entries) {
+    const line = document.createElement("div");
+    line.className = "carry-model-line";
+    line.textContent = `${shortModel(m)} ${usd(c)}`;
+    el.appendChild(line);
+  }
+}
+
 function fillCard(card, s) {
-  card.querySelector(".proj").textContent = shortSlug(s.projectSlug);
+  // Title = AI-generated session name when available (hover for the long description);
+  // the project slug then moves down into the meta line.
+  const projEl = card.querySelector(".proj");
+  projEl.textContent = s.name || shortSlug(s.projectSlug);
+  projEl.title = s.nameDescription || "";
+  projEl.classList.toggle("named", !!s.name);
+  card.querySelector(".slug").textContent = s.name ? `${shortSlug(s.projectSlug)} · ` : "";
   card.querySelector(".model").textContent = shortModel(s.model);
   card.querySelector(".turns").textContent = `${s.turns} turns`;
   const tier = card.querySelector(".tier");
   tier.textContent = s.ttlTier ? `${s.ttlTier} TTL` : "TTL ?";
   tier.className = `badge tier ${s.ttlTier ? `tier-${s.ttlTier}` : ""}`;
   card.querySelector(".cost").textContent = usd(s.sessionCostUsd);
-  card.querySelector(".prefix").textContent = kTok(s.prefixTokens);
 
   // "Start fresh?" indicator: what it costs to carry this context each turn.
   const tax = Number(s.prefixTaxUsd || 0);
+  card.querySelector(".carry-model").textContent = s.model ? `(${prettyModel(s.model)})` : "";
   const carryEl = card.querySelector(".carry");
-  carryEl.textContent = tax ? usd(tax) : "–";
   carryEl.className = `carry ${carryClass(tax)}`;
+  carryEl.querySelector(".carry-val").textContent = tax ? usd(tax) : "–";
+  // Context prefix folded under the carry number — the context size behind that per-turn cost.
+  card.querySelector(".prefix-sub").textContent = `(${kTok(s.prefixTokens)})`;
   const hint = card.querySelector(".carry-hint");
   // Ambient, not a directive — a fresh chat pays ~none of this per turn.
   hint.textContent = tax >= 0.1 ? `· fresh chat saves ~${usd(tax)}/turn` : "";
   const cur = normModel(s.model);
-  const byModel = Object.entries(s.prefixTaxByModel || {})
-    .filter(([m]) => m !== cur)
-    .map(([m, c]) => `${shortModel(m)} ${usd(c)}`)
-    .join(" · ");
-  card.querySelector(".carry-models").textContent = byModel || "–";
+  fillModelLines(
+    card.querySelector(".carry-models"),
+    Object.entries(s.prefixTaxByModel || {}).filter(([m]) => m !== cur),
+  );
 
   card.querySelector(".rewrite").textContent = s.rewriteCostUsd ? usd(s.rewriteCostUsd) : "–";
-  const sw = Object.entries(s.modelSwitchCostUsd || {})
-    .map(([m, c]) => `${shortModel(m)} ${usd(c)}`)
-    .slice(0, 2)
-    .join(" · ");
-  card.querySelector(".switch").textContent = sw || "–";
+  fillModelLines(card.querySelector(".switch"), Object.entries(s.modelSwitchCostUsd || {}));
   card.dataset.expiresAt = s.expiresAt ?? "";
   card.dataset.ttlTier = s.ttlTier ?? "";
 
@@ -171,6 +226,32 @@ function fillCard(card, s) {
     } catch {
       /* daemon down */
     }
+  };
+
+  // "open": terminal window in the session's cwd running `claude --resume`.
+  const openBtn = card.querySelector(".open-btn");
+  openBtn.onclick = async () => {
+    openBtn.disabled = true;
+    let label = "opened ✓";
+    try {
+      const r = await fetch("/session/launch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_id: s.sessionId }),
+      });
+      const res = await r.json();
+      if (!res || res.ok !== true) {
+        label = "failed";
+        openBtn.title = (res && res.error) || "launch failed";
+      }
+    } catch {
+      label = "daemon down";
+    }
+    openBtn.textContent = label;
+    setTimeout(() => {
+      openBtn.textContent = "⧉ open";
+      openBtn.disabled = false;
+    }, 2500);
   };
   tick(card);
 }
@@ -204,19 +285,6 @@ async function refreshAnalytics() {
       [1, 2, 3, 4],
     );
     renderRtkGain(rtk.gain);
-    const vcls = { "rtk saves": "verdict-saves", "rtk adds overhead": "verdict-overhead", "no difference": "verdict-none", "insufficient data": "verdict-nodata" };
-    document.getElementById("rtk").innerHTML = table(
-      ["Command class", "n (plain/rtk)", "Median chars plain", "Median chars rtk", "Saved", "Verdict"],
-      rtk.verdict.slice(0, 20).map((v) => [
-        `<code>${esc(v.commandClass)}</code>`,
-        `${v.plain ? v.plain.n : 0} / ${v.rtk ? v.rtk.n : 0}`,
-        v.plain ? fmtN(v.plain.medianChars) : "–",
-        v.rtk ? fmtN(v.rtk.medianChars) : "–",
-        v.medianCharsSavedPct != null ? `${v.medianCharsSavedPct}%` : "–",
-        `<span class="${vcls[v.verdict] || ""}">${esc(v.verdict)}</span>`,
-      ]),
-      [1, 2, 3, 4],
-    );
   } catch {
     /* daemon down */
   }
@@ -232,7 +300,7 @@ function table(headers, rows, numCols = []) {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const fmtN = (n) => Number(n).toLocaleString();
 
-/** rtk's OWN measured savings (ground truth). The transcript A/B below can't see
+/** rtk's OWN measured savings (ground truth). The transcript can't see
     hook-rewritten commands, so this bar is the real "is rtk working?" signal. */
 function renderRtkGain(gain) {
   const el = document.getElementById("rtk-gain");
@@ -348,6 +416,15 @@ function shortSlug(slug) {
 }
 function shortModel(m) {
   return (m || "?").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+/** "claude-opus-4-8-20250915" -> "opus 4.8"; "claude-fable-5" -> "fable 5". */
+function prettyModel(m) {
+  const parts = normModel(m).replace(/^claude-/, "").split("-").filter(Boolean);
+  let i = parts.length;
+  while (i > 0 && /^\d+$/.test(parts[i - 1])) i--;
+  const name = parts.slice(0, i).join(" ");
+  const ver = parts.slice(i).join(".");
+  return (name + (ver ? ` ${ver}` : "")).trim() || shortModel(m);
 }
 function normModel(m) {
   return (m || "").replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "").toLowerCase();

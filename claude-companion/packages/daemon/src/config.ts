@@ -22,8 +22,38 @@ export interface CccConfig {
     actPct: number;
   };
   keepwarm: {
+    /**
+     * Master switch. When false, keep-warm never arms — the dashboard toggle and the
+     * Stop-hook authorize both refuse — regardless of any per-session arming. Keep-warm
+     * is opt-in per session even when enabled; this is the hard off switch on top of that.
+     */
+    enabled: boolean;
     /** Soft cap on pings per idle period (user-overridable, never break-even-limited). */
     maxPingsPerIdle: number;
+  };
+  /**
+   * Plan-first advisor — nudges toward plan mode on design/planning-shaped prompts early
+   * in a session. This is a SEPARATE feature from the rate-limit guardian's wrap-up/handoff
+   * delivery, even though both ride the UserPromptSubmit hook: turning the advisor off
+   * silences only the plan nudge; guardian delivery stays governed by `guardian.action`.
+   */
+  advisor: {
+    /** Master switch for the plan-first nudge. */
+    enabled: boolean;
+    /** Minimum prompts between nudges, per session. */
+    nudgeEvery: number;
+  };
+  /**
+   * Session naming — the daemon summarizes each session's prompts into a dashboard
+   * name + description by running `claude -p` headless on a cheap model. Uses your
+   * existing claude login (no API key needed); a few one-shot haiku calls per active
+   * session per hour. Disable if you don't want ccc spending anything on your behalf.
+   */
+  naming: {
+    /** Master switch. */
+    enabled: boolean;
+    /** Model passed to `claude -p --model` for naming calls. */
+    model: string;
   };
   /**
    * "It's your turn" signal — plays a sound + flashes the dashboard when Claude
@@ -70,14 +100,18 @@ export const DEFAULTS: CccConfig = {
   warnBeforeSeconds: 60,
   monthlyBudgetUsd: null,
   guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
-  keepwarm: { maxPingsPerIdle: 12 },
+  keepwarm: { enabled: true, maxPingsPerIdle: 12 },
+  advisor: { enabled: true, nudgeEvery: 10 },
+  naming: { enabled: true, model: "haiku" },
   turnSignal: {
     enabled: true,
     sound: true,
     flash: true,
     flashColor: "#ffffff",
     flashMs: 260,
-    soundLeadMs: 1200,
+    // 750ms of device spin-up before the sound so its opening isn't clipped;
+    // lower it to tighten the flash->sound gap, raise it if clipping returns.
+    soundLeadMs: 750,
     // "" means: let the hook pick a sensible per-platform default.
     sounds: { done: "", question: "", permission: "" },
   },
@@ -95,6 +129,8 @@ export function loadConfig(): CccConfig {
       ...raw,
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
       keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
+      advisor: { ...DEFAULTS.advisor, ...(raw.advisor ?? {}) },
+      naming: { ...DEFAULTS.naming, ...(raw.naming ?? {}) },
       turnSignal: {
         ...DEFAULTS.turnSignal,
         ...(raw.turnSignal ?? {}),
