@@ -17,6 +17,7 @@ import { Namer } from "./namer.ts";
 import { launchTerminal } from "./launcher.ts";
 import { computeExactAttribution } from "./attribution.ts";
 import { AccountUsagePoller } from "./account-usage.ts";
+import { WindowSampler } from "./window-sampler.ts";
 
 export async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -34,20 +35,16 @@ export async function main(): Promise<void> {
 
   // Account usage: the claude.ai meter itself, so the month tile matches the website.
   let accountPoller: AccountUsagePoller | null = null;
+  // Window observations (from OAuth polls AND statusline couriers) persist to the
+  // events table so the real reset cadence — e.g. the undocumented ~72h "weekly"
+  // advance — is reconstructable; /api/windows serves it to the dashboard chart.
+  const windowSampler = new WindowSampler(store);
   if (cfg.accountUsage.enabled) {
-    // Log each window's resets_at changes so the REAL reset cadence is observable
-    // (the "seven_day" window empirically resets every ~72h — undocumented).
-    const lastResets = new Map<string, string>();
     accountPoller = new AccountUsagePoller({
       pollMs: Math.max(15, cfg.accountUsage.pollSeconds) * 1000,
       onUpdate: (status) => {
         for (const w of status.usage?.windows ?? []) {
-          if (!w.resetsAt) continue;
-          const prev = lastResets.get(w.name);
-          if (prev !== w.resetsAt) {
-            lastResets.set(w.name, w.resetsAt);
-            if (prev) store.logEvent("account_window_reset", null, { window: w.name, prev, next: w.resetsAt, utilization: w.utilization });
-          }
+          windowSampler.observe({ window: w.name, utilization: w.utilization, resetsAt: w.resetsAt, source: "oauth" });
         }
       },
     });
@@ -120,6 +117,7 @@ export async function main(): Promise<void> {
     store,
     cfg,
     stateDir: paths.state,
+    sampler: windowSampler,
     onNotify: (n) => {
       const s = tracker.get(n.sessionId);
       const win = n.window === "five_hour" ? "5-hour" : "weekly";

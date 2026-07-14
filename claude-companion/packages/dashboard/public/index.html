@@ -80,6 +80,14 @@
     <div id="rtk-gain" class="rtk-gain"></div>
   </section>
 
+  <section class="feed-wrap" id="windows-wrap" hidden>
+    <details class="collapsible">
+      <summary>Usage-window resets <span class="soft">(observed 5h/7d window advances — e.g. the undocumented ~72h weekly reset)</span></summary>
+      <div id="windows-chart" class="win-chart"></div>
+      <div id="windows-resets" class="table-wrap"></div>
+    </details>
+  </section>
+
   <section class="feed-wrap">
     <h2>Events</h2>
     <ul id="feed" class="feed"></ul>
@@ -94,6 +102,7 @@
         <div class="meta"><span class="slug"></span><span class="model"></span> · <span class="turns"></span></div>
       </div>
       <div class="head-actions">
+        <button class="dismiss-btn" type="button" title="Dismiss this card. It returns if the session gets a new turn." aria-label="Dismiss card">×</button>
         <span class="badge tier"></span>
         <button class="open-btn" type="button" title="Open a terminal in this session's directory and resume it">⧉ open</button>
       </div>
@@ -124,7 +133,9 @@
 <script src="/app.js"></script>
 <script type="module">
   import { initControls } from "/controls.js";
+  import { initWindowsSection } from "/windows-chart.js";
   initControls();
+  initWindowsSection();
 </script>
 </body>
 </html>

@@ -245,6 +245,17 @@ export class Store {
     return row.c;
   }
 
+  /** Usage-window observations (samples + resets) since `sinceMs`, oldest first. */
+  windowEvents(sinceMs: number): Array<{ ts: number; kind: string; payload: string | null }> {
+    return this.db
+      .prepare(
+        `SELECT ts, kind, payload FROM events
+         WHERE kind IN ('account_window_sample', 'account_window_reset') AND ts >= ?
+         ORDER BY ts`,
+      )
+      .all(sinceMs) as Array<{ ts: number; kind: string; payload: string | null }>;
+  }
+
   getMeta(key: string): string | null {
     const row = this.db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as { value: string } | undefined;
     return row?.value ?? null;

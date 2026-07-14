@@ -33,6 +33,33 @@ const SESSION_COLORS = [
 /** sessionId -> palette index. Stable per session so its color survives re-sorts and re-renders. */
 const sessionColorIdx = new Map();
 
+/** sessionId -> lastTurnAt at the moment the user dismissed the card. The card stays hidden
+    until a strictly newer turn arrives (then it un-dismisses itself). Persisted to localStorage
+    so a dismiss survives reloads and the daemon re-sending every session on connect. */
+const DISMISS_KEY = "ccc.dismissedSessions";
+const dismissed = loadDismissed();
+
+function loadDismissed() {
+  try {
+    const raw = localStorage.getItem(DISMISS_KEY);
+    return new Map(raw ? Object.entries(JSON.parse(raw)).map(([k, v]) => [k, Number(v)]) : []);
+  } catch {
+    return new Map();
+  }
+}
+function saveDismissed() {
+  try {
+    localStorage.setItem(DISMISS_KEY, JSON.stringify(Object.fromEntries(dismissed)));
+  } catch {
+    /* storage disabled/full — dismiss still works for this page load */
+  }
+}
+function dismissSession(id, lastTurnAt) {
+  dismissed.set(id, Number(lastTurnAt) || 0);
+  saveDismissed();
+  renderAll();
+}
+
 /** Assign (and remember) the least-used palette color among currently-visible sessions,
     so up to 8 live sessions stay distinguishable; ties break to the lowest index. */
 function colorForSession(id, visibleIds) {
@@ -125,9 +152,23 @@ function renderMonth(spentUsd, capUsd, note) {
 
 function visibleSessions() {
   const now = Date.now();
-  return [...sessions.values()]
-    .filter((s) => s.lastTurnAt && now - s.lastTurnAt < ACTIVE_WINDOW_MS)
-    .sort((a, b) => b.lastTurnAt - a.lastTurnAt);
+  let changed = false;
+  const list = [];
+  for (const s of sessions.values()) {
+    const active = s.lastTurnAt && now - s.lastTurnAt < ACTIVE_WINDOW_MS;
+    if (dismissed.has(s.sessionId)) {
+      if (s.lastTurnAt && s.lastTurnAt > dismissed.get(s.sessionId)) {
+        dismissed.delete(s.sessionId); // a newer turn arrived — bring the card back
+        changed = true;
+      } else {
+        if (!active) { dismissed.delete(s.sessionId); changed = true; } // aged out; forget it to bound storage
+        continue; // still dismissed, no new activity
+      }
+    }
+    if (active) list.push(s);
+  }
+  if (changed) saveDismissed();
+  return list.sort((a, b) => b.lastTurnAt - a.lastTurnAt);
 }
 
 function renderAll() {
@@ -239,6 +280,10 @@ function fillCard(card, s) {
       /* daemon down */
     }
   };
+
+  // "×": hide this card. Returns automatically if the session gets a newer turn.
+  const dismissBtn = card.querySelector(".dismiss-btn");
+  if (dismissBtn) dismissBtn.onclick = () => dismissSession(s.sessionId, s.lastTurnAt);
 
   // "open": terminal window in the session's cwd running `claude --resume`.
   const openBtn = card.querySelector(".open-btn");

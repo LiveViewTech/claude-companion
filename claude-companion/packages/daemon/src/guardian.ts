@@ -5,6 +5,7 @@ import type { AccountUsage } from "./account-usage.ts";
 import type { CccConfig } from "./config.ts";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
+import type { WindowSampler } from "./window-sampler.ts";
 
 interface RateLimitWindow {
   used_percentage?: number;
@@ -39,6 +40,7 @@ export class Guardian {
   private cfg: CccConfig;
   private courierDir: string;
   private onNotify: (n: GuardianNotification) => void;
+  private sampler: WindowSampler | null;
 
   constructor(opts: {
     tracker: SessionTracker;
@@ -46,12 +48,15 @@ export class Guardian {
     cfg: CccConfig;
     stateDir: string;
     onNotify: (n: GuardianNotification) => void;
+    /** When set, courier rate-limit windows are logged for reset-cadence history. */
+    sampler?: WindowSampler;
   }) {
     this.tracker = opts.tracker;
     this.store = opts.store;
     this.cfg = opts.cfg;
     this.courierDir = path.join(opts.stateDir, "courier");
     this.onNotify = opts.onNotify;
+    this.sampler = opts.sampler ?? null;
   }
 
   /** Sessions this much idle or more don't get account-window updates (avoids arming wrap-ups on dead sessions). */
@@ -103,9 +108,21 @@ export class Guardian {
         continue;
       }
       if (state.guardian.updatedAt != null && payload.ts <= state.guardian.updatedAt) continue;
+      // Courier is the only window source on subscription seats without OAuth
+      // windows — sample here (not in apply(), which the OAuth path also uses).
+      this.sampleCourier(payload);
       if (this.apply(state, payload)) changed.push(state);
     }
     return changed;
+  }
+
+  private sampleCourier(payload: CourierPayload): void {
+    if (!this.sampler) return;
+    for (const [name, w] of [["five_hour", payload.rate_limits.five_hour], ["seven_day", payload.rate_limits.seven_day]] as const) {
+      if (w?.used_percentage == null) continue;
+      const resetsAt = w.resets_at != null ? new Date(w.resets_at * 1000).toISOString() : null;
+      this.sampler.observe({ window: name, utilization: w.used_percentage, resetsAt, source: "courier" });
+    }
   }
 
   private apply(state: SessionState, payload: CourierPayload): boolean {

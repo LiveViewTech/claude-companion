@@ -121,6 +121,7 @@ export class Server {
         return void this.json(res, this.handlers.keepwarmBreakEven?.(sid) ?? null);
       }
       if (p === "/api/account") return void this.json(res, this.accountRaw?.() ?? { error: "account usage disabled" });
+      if (p === "/api/windows") return void this.json(res, this.windowsPayload());
       if (p === "/api/config") return void this.json(res, this.handlers.getConfig?.() ?? {});
       if (p === "/events") return void this.sse(res);
       if (req.method === "POST" && p === "/advise") return void this.post(req, res, (b) => this.handlers.advise?.(b) ?? {});
@@ -210,6 +211,52 @@ export class Server {
       monthlyBudgetUsd: this.monthlyBudgetUsd,
       account: this.accountUsage?.() ?? null,
     };
+  }
+
+  /**
+   * Usage-window history for the reset-patterns chart: utilization samples plus
+   * observed resets_at advances (whose prev→next delta is the window's real
+   * cadence — e.g. the undocumented ~72h "weekly" advance). `informative` gates
+   * dashboard visibility: false until some window actually moved, as on
+   * dollar-metered seats that report no 5h/7d windows at all.
+   */
+  private windowsPayload(): {
+    series: Array<{
+      name: string;
+      points: Array<{ ts: number; pct: number }>;
+      resets: Array<{ ts: number; prev: string; next: string; gapHours: number | null }>;
+    }>;
+    informative: boolean;
+    sinceMs: number;
+  } {
+    const sinceMs = Date.now() - 14 * 86_400_000;
+    const series = new Map<string, { name: string; points: Array<{ ts: number; pct: number }>; resets: Array<{ ts: number; prev: string; next: string; gapHours: number | null }> }>();
+    for (const row of this.store.windowEvents(sinceMs)) {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(row.payload ?? "null") as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const name = typeof payload?.["window"] === "string" ? (payload["window"] as string) : null;
+      if (!name) continue;
+      const s = series.get(name) ?? { name, points: [], resets: [] };
+      if (row.kind === "account_window_sample" && typeof payload["utilization"] === "number") {
+        s.points.push({ ts: row.ts, pct: payload["utilization"] as number });
+      } else if (row.kind === "account_window_reset" && typeof payload["prev"] === "string" && typeof payload["next"] === "string") {
+        const gapMs = Date.parse(payload["next"] as string) - Date.parse(payload["prev"] as string);
+        s.resets.push({
+          ts: row.ts,
+          prev: payload["prev"] as string,
+          next: payload["next"] as string,
+          gapHours: Number.isFinite(gapMs) ? Math.round(gapMs / 360_000) / 10 : null,
+        });
+      }
+      series.set(name, s);
+    }
+    const all = [...series.values()];
+    const informative = all.some((s) => s.resets.length > 0 || s.points.some((pt) => pt.pct > 0));
+    return { series: all, informative, sinceMs };
   }
 
   /**
