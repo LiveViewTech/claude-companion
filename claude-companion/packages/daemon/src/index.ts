@@ -43,6 +43,7 @@ export async function main(): Promise<void> {
     accountPoller = new AccountUsagePoller({
       pollMs: Math.max(15, cfg.accountUsage.pollSeconds) * 1000,
       onUpdate: (status) => {
+        if (status.usage) windowSampler.observeMeter(status.usage.usedUsd);
         for (const w of status.usage?.windows ?? []) {
           windowSampler.observe({ window: w.name, utilization: w.utilization, resetsAt: w.resetsAt, source: "oauth" });
         }

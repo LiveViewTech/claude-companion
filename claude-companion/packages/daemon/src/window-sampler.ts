@@ -22,10 +22,23 @@ export interface WindowObservation {
  */
 export class WindowSampler {
   private last = new Map<string, { utilization: number; resetsAt: string | null }>();
+  private lastMeterUsd: number | null = null;
   private store: Store;
 
   constructor(store: Store) {
     this.store = store;
+  }
+
+  /**
+   * Persist the account meter (claude.ai used-dollars) whenever it moves. Two uses:
+   * `meter(now) - meter(local midnight)` gives an account-true "today" (all surfaces),
+   * and regressing meter deltas against local token components identifies any term
+   * the local pricing formula misses (observed: meter runs ~12-16% above token-math).
+   */
+  observeMeter(usedUsd: number): void {
+    if (this.lastMeterUsd === usedUsd) return;
+    this.lastMeterUsd = usedUsd;
+    this.store.logEvent("account_meter_sample", null, { usedUsd });
   }
 
   observe(o: WindowObservation): void {

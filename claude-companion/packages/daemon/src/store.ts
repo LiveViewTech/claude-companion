@@ -245,6 +245,24 @@ export class Store {
     return row.c;
   }
 
+  /** Account-meter reading (USD) as of `atMs`: the last sample at or before it. Null when none. */
+  meterUsdAt(atMs: number): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT payload FROM events
+         WHERE kind = 'account_meter_sample' AND ts <= ?
+         ORDER BY ts DESC LIMIT 1`,
+      )
+      .get(atMs) as { payload: string } | undefined;
+    if (!row) return null;
+    try {
+      const usd = (JSON.parse(row.payload) as { usedUsd?: unknown }).usedUsd;
+      return typeof usd === "number" && Number.isFinite(usd) ? usd : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Usage-window observations (samples + resets) since `sinceMs`, oldest first. */
   windowEvents(sinceMs: number): Array<{ ts: number; kind: string; payload: string | null }> {
     return this.db

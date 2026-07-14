@@ -116,8 +116,16 @@ function setDaemon(ok) {
 async function refreshDayCost() {
   try {
     const r = await fetch("/api/day");
-    const { dayCostUsd, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
-    dayCostEl.textContent = usd(dayCostUsd);
+    const { dayCostUsd, dayMeterUsd, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
+    if (typeof dayMeterUsd === "number") {
+      // Account meter delta since local midnight — all surfaces, the same arithmetic
+      // as the claude.ai usage page. Local estimate stays visible as the tooltip.
+      dayCostEl.textContent = usd(dayMeterUsd);
+      dayCostEl.title = `this device (transcript est.): ${usd(dayCostUsd)}`;
+    } else {
+      dayCostEl.textContent = usd(dayCostUsd);
+      dayCostEl.title = "local transcript estimate — account meter takes over once samples span midnight";
+    }
     const acct = account && account.usage;
     if (acct && typeof acct.usedUsd === "number") {
       // Anthropic's own meter (the claude.ai usage page number): account-wide,

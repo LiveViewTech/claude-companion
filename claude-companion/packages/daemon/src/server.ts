@@ -188,6 +188,7 @@ export class Server {
 
   private dayPayload(): {
     dayCostUsd: number;
+    dayMeterUsd: number | null;
     from: number;
     to: number;
     monthCostUsd: number;
@@ -204,6 +205,7 @@ export class Server {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     return {
       dayCostUsd: this.store.dayCostUsd(start, end),
+      dayMeterUsd: this.dayMeterUsd(start),
       from: start,
       to: end,
       monthCostUsd: this.store.dayCostUsd(monthStart, now.getTime() + 1),
@@ -211,6 +213,21 @@ export class Server {
       monthlyBudgetUsd: this.monthlyBudgetUsd,
       account: this.accountUsage?.() ?? null,
     };
+  }
+
+  /**
+   * Account-true "today": current claude.ai meter minus its reading at local midnight
+   * (all surfaces, matching the website's arithmetic — the local dayCostUsd estimate
+   * consistently reads ~12-16% low against it). Null until meter samples span midnight,
+   * or when the meter reset mid-day (billing-cycle rollover).
+   */
+  private dayMeterUsd(dayStartMs: number): number | null {
+    const status = this.accountUsage?.() as { usage?: { usedUsd?: number } } | null | undefined;
+    const current = status?.usage?.usedUsd;
+    if (typeof current !== "number") return null;
+    const baseline = this.store.meterUsdAt(dayStartMs);
+    if (baseline == null || current < baseline) return null;
+    return current - baseline;
   }
 
   /**

@@ -43,6 +43,58 @@ describe("WindowSampler", () => {
     expect(resets).toHaveLength(1);
     expect(resets[0]).toMatchObject({ window: "seven_day", prev: "2026-07-16T05:00:00Z", next: "2026-07-19T05:00:00Z" });
   });
+
+  it("logs the account meter only when it moves", () => {
+    sampler.observeMeter(239.28);
+    sampler.observeMeter(239.28); // no-op
+    sampler.observeMeter(240.01);
+    expect(events("account_meter_sample").map((p) => p["usedUsd"])).toEqual([239.28, 240.01]);
+  });
+});
+
+describe("GET /api/day dayMeterUsd", () => {
+  function insertMeterSample(ts: number, usedUsd: number): void {
+    store.db
+      .prepare(`INSERT INTO events (ts, kind, session_id, payload) VALUES (?, 'account_meter_sample', NULL, ?)`)
+      .run(ts, JSON.stringify({ usedUsd }));
+  }
+
+  async function fetchDay(server: Server): Promise<{ dayMeterUsd: number | null; dayCostUsd: number }> {
+    return (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
+      dayMeterUsd: number | null;
+      dayCostUsd: number;
+    };
+  }
+
+  it("reports meter(now) - meter(midnight) when samples span midnight", async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    insertMeterSample(midnight.getTime() - 3600_000, 200.0); // last reading before midnight
+    insertMeterSample(midnight.getTime() + 3600_000, 210.0); // intraday sample (ignored by baseline)
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = () => ({ usage: { usedUsd: 276.3 }, error: null });
+    await server.listen();
+    try {
+      expect((await fetchDay(server)).dayMeterUsd).toBeCloseTo(76.3);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("is null without a pre-midnight baseline or after a cycle reset", async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = () => ({ usage: { usedUsd: 50 }, error: null });
+    await server.listen();
+    try {
+      expect((await fetchDay(server)).dayMeterUsd).toBeNull(); // no samples at all
+      insertMeterSample(midnight.getTime() - 60_000, 490.0); // baseline above current => meter reset
+      expect((await fetchDay(server)).dayMeterUsd).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("GET /api/windows", () => {
