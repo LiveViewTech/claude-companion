@@ -7,13 +7,15 @@ import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
 import type { WindowSampler } from "./window-sampler.ts";
 
-interface RateLimitWindow {
+interface UsageLimitWindow {
   used_percentage?: number;
   resets_at?: number; // unix seconds
 }
 interface CourierPayload {
   ts: number;
-  rate_limits: { five_hour?: RateLimitWindow; seven_day?: RateLimitWindow };
+  // `rate_limits` is Claude Code's own name for these usage windows in the statusline
+  // stdin JSON; the courier passes the field through verbatim, so the key is kept as-is.
+  rate_limits: { five_hour?: UsageLimitWindow; seven_day?: UsageLimitWindow };
 }
 
 export interface GuardianNotification {
@@ -26,7 +28,7 @@ export interface GuardianNotification {
 }
 
 /**
- * Rate-limit guardian: consumes official rate_limits couriered by the statusline,
+ * Usage-limit guardian: consumes the official `rate_limits` field couriered by the statusline,
  * updates session state, and — at configured thresholds — raises notifications
  * and arms a ONE-SHOT wrap-up/handoff instruction for the hooks to deliver.
  *
@@ -48,7 +50,7 @@ export class Guardian {
     cfg: CccConfig;
     stateDir: string;
     onNotify: (n: GuardianNotification) => void;
-    /** When set, courier rate-limit windows are logged for reset-cadence history. */
+    /** When set, courier usage-limit windows are logged for reset-cadence history. */
     sampler?: WindowSampler;
   }) {
     this.tracker = opts.tracker;

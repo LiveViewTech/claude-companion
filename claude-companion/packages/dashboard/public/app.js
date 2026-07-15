@@ -116,13 +116,24 @@ function setDaemon(ok) {
 async function refreshDayCost() {
   try {
     const r = await fetch("/api/day");
-    const { dayCostUsd, dayMeterUsd, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
-    if (typeof dayMeterUsd === "number") {
+    const { dayCostUsd, dayMeterUsd, dayMidnightGap, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
+    if (dayMidnightGap) {
+      // Meter polling was down across midnight, so the midnight baseline is stale and
+      // today's delta would be wrong. Warn instead of showing a misleading number.
+      dayCostEl.textContent = "⚠ daemon gap";
+      dayCostEl.classList.add("warn");
+      const since = new Date(dayMidnightGap.sinceMs).toLocaleString();
+      dayCostEl.title =
+        `Account meter wasn't polled across midnight (~${dayMidnightGap.gapMinutes} min gap from ${since}), ` +
+        `so "today" can't be measured against the meter. This-device estimate: ${usd(dayCostUsd)}.`;
+    } else if (typeof dayMeterUsd === "number") {
       // Account meter delta since local midnight — all surfaces, the same arithmetic
       // as the claude.ai usage page. Local estimate stays visible as the tooltip.
+      dayCostEl.classList.remove("warn");
       dayCostEl.textContent = usd(dayMeterUsd);
       dayCostEl.title = `this device (transcript est.): ${usd(dayCostUsd)}`;
     } else {
+      dayCostEl.classList.remove("warn");
       dayCostEl.textContent = usd(dayCostUsd);
       dayCostEl.title = "local transcript estimate — account meter takes over once samples span midnight";
     }

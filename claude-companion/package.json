@@ -2,7 +2,7 @@
   "name": "claude-companion",
   "private": true,
   "version": "0.1.0",
-  "description": "Token/cache cockpit for Claude Code: cost visibility, cache-TTL countdown, keep-warm, advisor, rate-limit guardian",
+  "description": "Token/cache cockpit for Claude Code: cost visibility, cache-TTL countdown, keep-warm, advisor, usage-limit guardian",
   "type": "module",
   "workspaces": [
     "packages/*"

@@ -41,7 +41,7 @@
         <input type="checkbox" id="ctrl-keepwarm" />
         <span>Keep-warm <span class="soft">— allow cache-keeping pings</span></span>
       </label>
-      <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the rate-limit guardian.">
+      <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the usage-limit guardian.">
         <input type="checkbox" id="ctrl-advisor" />
         <span>Plan-first advisor <span class="soft">— nudge to plan mode</span></span>
       </label>
@@ -49,8 +49,8 @@
         <input type="checkbox" id="ctrl-naming" />
         <span>Session naming <span class="soft">— AI names on cards</span></span>
       </label>
-      <label class="ctrl" title="Watches your subscription rate limits and, near the cap, notifies and (optionally) asks Claude to capture context / write a handoff.">
-        <span>Rate-limit guardian</span>
+      <label class="ctrl" title="Watches your subscription usage limits (the 5-hour / 7-day plan windows) and, near the cap, notifies and (optionally) asks Claude to capture context / write a handoff.">
+        <span>Usage-limit guardian</span>
         <select id="ctrl-guardian">
           <option value="off">off</option>
           <option value="notify-only">notify only</option>

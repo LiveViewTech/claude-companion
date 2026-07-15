@@ -63,6 +63,7 @@ body {
 .tiles { display: flex; gap: 24px; margin-left: auto; flex-wrap: wrap; }
 .tile-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
 .tile-value { font-size: 20px; font-weight: 650; }
+.tile-value.warn { color: var(--warn); font-size: 14px; font-weight: 600; cursor: help; }
 .budget-bar { margin-top: 6px; height: 5px; width: 100%; min-width: 120px; background: var(--grid); border-radius: 999px; overflow: hidden; }
 .budget-fill { height: 100%; width: 0; background: var(--good); border-radius: 999px; transition: width 0.4s ease, background 0.3s; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }

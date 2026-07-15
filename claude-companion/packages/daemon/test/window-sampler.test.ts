@@ -95,6 +95,73 @@ describe("GET /api/day dayMeterUsd", () => {
       server.close();
     }
   });
+
+  it("warns (dayMidnightGap set, meter suppressed) when polling was down across midnight", async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    // Baseline from before the outage; polling then resumes after midnight.
+    insertMeterSample(midnight.getTime() - 3 * 3600_000, 200.0);
+    store.recordAccountPollOk(midnight.getTime() - 3 * 3600_000, 5 * 60_000); // last ok, pre-outage
+    store.recordAccountPollOk(midnight.getTime() + 3600_000, 5 * 60_000); // recovery — logs the straddling gap
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = () => ({ usage: { usedUsd: 276.3 }, error: null });
+    await server.listen();
+    try {
+      const day = (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
+        dayMeterUsd: number | null;
+        dayMidnightGap: { gapMinutes: number; sinceMs: number } | null;
+      };
+      expect(day.dayMeterUsd).toBeNull(); // suppressed despite a usable baseline
+      expect(day.dayMidnightGap).not.toBeNull();
+      expect(day.dayMidnightGap!.gapMinutes).toBe(240); // 4h outage
+    } finally {
+      server.close();
+    }
+  });
+
+  it("does NOT warn for an ordinary mid-day poll gap that misses midnight", async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    insertMeterSample(midnight.getTime() - 3600_000, 200.0);
+    // Continuous coverage across midnight, then a >5min restart gap well into the day.
+    store.recordAccountPollOk(midnight.getTime() - 60_000, 5 * 60_000);
+    store.recordAccountPollOk(midnight.getTime() + 60_000, 5 * 60_000);
+    store.recordAccountPollOk(midnight.getTime() + 4 * 3600_000, 5 * 60_000); // intraday restart gap
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = () => ({ usage: { usedUsd: 210.0 }, error: null });
+    await server.listen();
+    try {
+      const day = (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
+        dayMeterUsd: number | null;
+        dayMidnightGap: unknown;
+      };
+      expect(day.dayMidnightGap).toBeNull();
+      expect(day.dayMeterUsd).toBeCloseTo(10.0);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("Store.recordAccountPollOk / pollGapCovering", () => {
+  it("logs a gap row only when successful polls fall more than the threshold apart", () => {
+    const t0 = 1_000_000_000_000;
+    store.recordAccountPollOk(t0, 5 * 60_000);
+    store.recordAccountPollOk(t0 + 60_000, 5 * 60_000); // within threshold — no gap
+    store.recordAccountPollOk(t0 + 60_000 + 10 * 60_000, 5 * 60_000); // 10 min later — gap
+    const rows = store.db.prepare(`SELECT payload FROM events WHERE kind = 'account_poll_gap'`).all() as Array<{ payload: string }>;
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payload).gapMs).toBe(10 * 60_000);
+  });
+
+  it("pollGapCovering finds only a gap whose interval straddles the instant", () => {
+    const t0 = 1_000_000_000_000;
+    store.recordAccountPollOk(t0, 5 * 60_000);
+    store.recordAccountPollOk(t0 + 60 * 60_000, 5 * 60_000); // gap [t0, t0+60min]
+    expect(store.pollGapCovering(t0 + 30 * 60_000)).not.toBeNull(); // inside
+    expect(store.pollGapCovering(t0 + 90 * 60_000)).toBeNull(); // after
+    expect(store.pollGapCovering(t0 - 60_000)).toBeNull(); // before
+  });
 });
 
 describe("GET /api/windows", () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// UserPromptSubmit hook: advisor nudges + rate-limit-guardian delivery.
+// UserPromptSubmit hook: advisor nudges + usage-limit-guardian delivery.
 // Hard budget: fail-open on ANY error, total wall clock well under 100ms.
 import fs from "node:fs";
 import http from "node:http";

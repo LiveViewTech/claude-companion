@@ -47,7 +47,7 @@ export interface CccConfig {
   };
   /**
    * Plan-first advisor — nudges toward plan mode on design/planning-shaped prompts early
-   * in a session. This is a SEPARATE feature from the rate-limit guardian's wrap-up/handoff
+   * in a session. This is a SEPARATE feature from the usage-limit guardian's wrap-up/handoff
    * delivery, even though both ride the UserPromptSubmit hook: turning the advisor off
    * silences only the plan nudge; guardian delivery stays governed by `guardian.action`.
    */

@@ -263,6 +263,45 @@ export class Store {
     }
   }
 
+  /**
+   * Record a successful account-meter poll and flag any coverage gap. The last
+   * ok-timestamp lives in `meta`; when the previous ok was more than
+   * `gapThresholdMs` before `nowMs`, the downtime window [prev, nowMs] is written
+   * as one `account_poll_gap` row. That interval is what `pollGapCovering` tests:
+   * if it straddles local midnight the pre-midnight meter baseline is stale, so
+   * the "today" delta must be suppressed. Meter movement is tracked separately and
+   * deduped, so a flat-overnight meter is NOT mistaken for downtime — only an
+   * actual break in successful polling logs a row (rare: restart / net / token).
+   */
+  recordAccountPollOk(nowMs: number, gapThresholdMs: number): void {
+    const prevRaw = this.getMeta("account_poll_last_ok");
+    const prev = prevRaw != null ? Number(prevRaw) : null;
+    if (prev != null && Number.isFinite(prev) && nowMs - prev > gapThresholdMs) {
+      this.db
+        .prepare(`INSERT INTO events (ts, kind, session_id, payload) VALUES (?, 'account_poll_gap', NULL, ?)`)
+        .run(nowMs, JSON.stringify({ start: prev, end: nowMs, gapMs: nowMs - prev }));
+    }
+    this.setMeta("account_poll_last_ok", String(nowMs));
+  }
+
+  /** The most recent poll-coverage gap whose [start, end] straddles `instantMs`, else null. */
+  pollGapCovering(instantMs: number): { start: number; end: number; gapMs: number } | null {
+    const rows = this.db
+      .prepare(`SELECT payload FROM events WHERE kind = 'account_poll_gap' AND ts >= ? ORDER BY id DESC`)
+      .all(instantMs) as Array<{ payload: string }>;
+    for (const r of rows) {
+      try {
+        const g = JSON.parse(r.payload) as { start?: unknown; end?: unknown; gapMs?: unknown };
+        if (typeof g.start === "number" && typeof g.end === "number" && g.start <= instantMs && g.end >= instantMs) {
+          return { start: g.start, end: g.end, gapMs: typeof g.gapMs === "number" ? g.gapMs : g.end - g.start };
+        }
+      } catch {
+        // skip malformed row
+      }
+    }
+    return null;
+  }
+
   /** Usage-window observations (samples + resets) since `sinceMs`, oldest first. */
   windowEvents(sinceMs: number): Array<{ ts: number; kind: string; payload: string | null }> {
     return this.db

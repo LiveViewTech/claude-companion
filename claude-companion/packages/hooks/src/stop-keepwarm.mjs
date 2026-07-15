@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stop hook: (a) one-shot rate-limit-guardian delivery, (b) keep-warm cache pings.
+// Stop hook: (a) one-shot usage-limit-guardian delivery, (b) keep-warm cache pings.
 // Dormant unless the daemon has flagged an action in the session state file.
 // The ONLY surface that can spend money — every guard lives here.
 import fs from "node:fs";
@@ -64,11 +64,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const GUARDIAN_MESSAGES = {
   wrapup:
-    "SYSTEM (claude-companion rate-limit guardian): You are approaching the subscription usage limit. " +
+    "SYSTEM (claude-companion usage-limit guardian): You are approaching the subscription usage limit. " +
     "Stop taking on new work now. Capture the current context: update project docs/CLAUDE.md with the state of the work, " +
     "decisions made, and anything in flight, then finish cleanly and summarize where things stand.",
   handoff:
-    "SYSTEM (claude-companion rate-limit guardian): You are approaching the subscription usage limit. " +
+    "SYSTEM (claude-companion usage-limit guardian): You are approaching the subscription usage limit. " +
     "Stop taking on new work now. Write a HANDOFF.md in the repo root covering: the goal, current state, " +
     "what is done vs remaining, key files touched, decisions made, and precise next steps — " +
     "so a fresh session after the limit resets can resume cheaply. Then finish cleanly.",

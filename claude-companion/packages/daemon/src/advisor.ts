@@ -17,11 +17,11 @@ const PLANNING_RE =
 
 const GUARDIAN_CONTEXT = {
   wrapup:
-    "claude-companion rate-limit guardian: the user's subscription usage limit is nearly exhausted. " +
+    "claude-companion usage-limit guardian: the user's subscription usage limit is nearly exhausted. " +
     "Before or alongside this request, capture current context — update project docs/CLAUDE.md with the state of the work " +
     "and decisions made — and steer toward wrapping up cleanly rather than opening new work.",
   handoff:
-    "claude-companion rate-limit guardian: the user's subscription usage limit is nearly exhausted. " +
+    "claude-companion usage-limit guardian: the user's subscription usage limit is nearly exhausted. " +
     "Write a HANDOFF.md (goal, current state, done vs remaining, key files, decisions, precise next steps) " +
     "so a fresh session after the limit resets can resume cheaply, then steer toward wrapping up cleanly.",
 } as const;
@@ -56,13 +56,13 @@ export class Advisor {
 
     // 1) Guardian delivery rides along with the next prompt (whichever surface
     //    fires first acks; the other then sees pending == null). This is part of the
-    //    rate-limit guardian (governed by guardian.action), NOT the advisor toggle —
+    //    usage-limit guardian (governed by guardian.action), NOT the advisor toggle —
     //    it must keep working even when the plan nudge is switched off.
     const pending = state?.guardian.pendingAction;
     if (pending && this.ackGuardian(req.session_id, pending)) {
       res.additionalContext = GUARDIAN_CONTEXT[pending];
       const pct = state?.guardian.fiveHourPct ?? state?.guardian.sevenDayPct;
-      res.systemMessage = `⚠ rate-limit guardian: ~${pct != null ? Math.round(pct) : "?"}% of subscription limit used — asked Claude to ${pending === "handoff" ? "write HANDOFF.md and wrap up" : "capture context and wrap up"}.`;
+      res.systemMessage = `⚠ usage-limit guardian: ~${pct != null ? Math.round(pct) : "?"}% of subscription limit used — asked Claude to ${pending === "handoff" ? "write HANDOFF.md and wrap up" : "capture context and wrap up"}.`;
       return res; // guardian outranks nudges; never stack messages
     }
 

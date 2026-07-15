@@ -24,7 +24,7 @@ const MIME: Record<string, string> = {
 
 /**
  * Localhost-only HTTP server: static dashboard, JSON API, SSE stream,
- * plus endpoints the hooks/statusline call (advisor + rate-limit courier land here in M3).
+ * plus endpoints the hooks/statusline call (advisor + usage-limit courier land here in M3).
  */
 export class Server {
   private server: http.Server;
@@ -189,6 +189,7 @@ export class Server {
   private dayPayload(): {
     dayCostUsd: number;
     dayMeterUsd: number | null;
+    dayMidnightGap: { gapMinutes: number; sinceMs: number } | null;
     from: number;
     to: number;
     monthCostUsd: number;
@@ -203,9 +204,13 @@ export class Server {
     // SUM(cost_usd) over a ts range, so it serves the month window too. This is the
     // local this-device estimate; `account` carries the claude.ai meter when available.
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    // If meter polling was down across midnight the baseline is stale — suppress the
+    // (now wrong) meter delta and let the dashboard warn instead.
+    const dayMidnightGap = this.dayMidnightGap(start);
     return {
       dayCostUsd: this.store.dayCostUsd(start, end),
-      dayMeterUsd: this.dayMeterUsd(start),
+      dayMeterUsd: dayMidnightGap ? null : this.dayMeterUsd(start),
+      dayMidnightGap,
       from: start,
       to: end,
       monthCostUsd: this.store.dayCostUsd(monthStart, now.getTime() + 1),
@@ -213,6 +218,20 @@ export class Server {
       monthlyBudgetUsd: this.monthlyBudgetUsd,
       account: this.accountUsage?.() ?? null,
     };
+  }
+
+  /**
+   * Non-null when account-meter polling was down across local midnight (a poll gap
+   * straddling `dayStartMs`): the last sample at/before midnight then predates true
+   * midnight by the downtime, so `dayMeterUsd` would count pre-midnight movement
+   * into "today". The dashboard shows a warning in place of the number. An ordinary
+   * mid-day daemon restart makes a gap that does NOT straddle midnight, so it does
+   * not trip this.
+   */
+  private dayMidnightGap(dayStartMs: number): { gapMinutes: number; sinceMs: number } | null {
+    const gap = this.store.pollGapCovering(dayStartMs);
+    if (!gap) return null;
+    return { gapMinutes: Math.round(gap.gapMs / 60_000), sinceMs: gap.start };
   }
 
   /**

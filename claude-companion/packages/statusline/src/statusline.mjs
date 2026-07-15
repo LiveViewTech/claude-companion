@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Claude Code statusline for claude-companion.
 // Dependency-free and fast: stdin JSON + daemon-written state file -> one ANSI line.
-// Also acts as the *rate-limits courier*: official rate_limits only exist in this
-// stdin JSON, so we persist them for the daemon (guardian, M3).
+// Also acts as the *usage-limits courier*: the plan usage windows (5h/7d) only exist in this
+// stdin JSON — Claude Code names the field `rate_limits` — so we persist them for the daemon (guardian, M3).
 //
 // Degrades gracefully: with the daemon down it renders from stdin alone.
 import fs from "node:fs";
@@ -54,7 +54,7 @@ function main() {
   const sessionId = input.session_id ?? input.sessionId ?? "";
   const dir = stateDir();
 
-  // --- courier: persist official rate_limits for the daemon (best effort) ----
+  // --- courier: persist the official `rate_limits` field (usage-limit windows) for the daemon (best effort) ----
   if (sessionId && input.rate_limits && typeof input.rate_limits === "object") {
     try {
       fs.mkdirSync(path.join(dir, "courier"), { recursive: true });
@@ -102,7 +102,7 @@ function main() {
   const ctxPct = input.context_window?.used_percentage;
   if (typeof ctxPct === "number") parts.push(`${DIM}ctx ${Math.round(ctxPct)}%${RESET}`);
 
-  // official rate limits (subscription only)
+  // official usage limits (subscription only) — Claude Code's `rate_limits` field
   const rl = input.rate_limits;
   const fmtLimit = (o, label) => {
     if (!o || typeof o.used_percentage !== "number") return null;

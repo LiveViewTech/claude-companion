@@ -40,10 +40,20 @@ export async function main(): Promise<void> {
   // advance — is reconstructable; /api/windows serves it to the dashboard chart.
   const windowSampler = new WindowSampler(store);
   if (cfg.accountUsage.enabled) {
+    const pollMs = Math.max(15, cfg.accountUsage.pollSeconds) * 1000;
+    // A break in successful polling longer than this means the daemon (or the
+    // network/token) was down; recordAccountPollOk logs it so a gap straddling
+    // local midnight can invalidate the stale meter baseline (see dayMidnightGap).
+    const pollGapMs = Math.max(5 * 60_000, pollMs * 4);
     accountPoller = new AccountUsagePoller({
-      pollMs: Math.max(15, cfg.accountUsage.pollSeconds) * 1000,
+      pollMs,
       onUpdate: (status) => {
-        if (status.usage) windowSampler.observeMeter(status.usage.usedUsd);
+        // Only a genuinely successful poll (error === null) counts as meter coverage;
+        // status.usage lingers as last-good across errors, so gate on error too.
+        if (!status.error && status.usage) {
+          windowSampler.observeMeter(status.usage.usedUsd);
+          store.recordAccountPollOk(Date.now(), pollGapMs);
+        }
         for (const w of status.usage?.windows ?? []) {
           windowSampler.observe({ window: w.name, utilization: w.utilization, resetsAt: w.resetsAt, source: "oauth" });
         }
@@ -112,7 +122,7 @@ export async function main(): Promise<void> {
     );
   });
 
-  // M3: rate-limit guardian (courier sweep) + advisor endpoint.
+  // M3: usage-limit guardian (courier sweep) + advisor endpoint.
   const guardian = new Guardian({
     tracker,
     store,
@@ -125,7 +135,7 @@ export async function main(): Promise<void> {
       const resets = n.resetsAt ? new Date(n.resetsAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
       toast(
         {
-          title: n.level === "act" ? `Rate limit ${Math.round(n.pct)}% — wrapping up` : `Rate limit ${Math.round(n.pct)}%`,
+          title: n.level === "act" ? `Usage limit ${Math.round(n.pct)}% — wrapping up` : `Usage limit ${Math.round(n.pct)}%`,
           message:
             n.level === "act"
               ? `${s?.projectSlug ?? n.sessionId}: ${win} limit nearly exhausted (resets ${resets}). Claude will be told to ${n.action === "handoff" ? "write a handoff" : "capture context and wrap up"}.`

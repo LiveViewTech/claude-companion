@@ -30,7 +30,7 @@ function poller(fetchFn: typeof fetch): AccountUsagePoller {
 }
 
 describe("parseUsageResponse", () => {
-  it("extracts the claude.ai meter (cents -> dollars) and rate-limit windows", () => {
+  it("extracts the claude.ai meter (cents -> dollars) and usage-limit windows", () => {
     const u = parseUsageResponse(SAMPLE)!;
     expect(u.usedUsd).toBe(239.28);
     expect(u.monthlyLimitUsd).toBe(500);

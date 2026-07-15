@@ -126,7 +126,7 @@ export interface SessionState {
     reason: string;
   };
   guardian: {
-    /** Latest official rate_limits couriered from the statusline, if any. */
+    /** Latest usage-limit percentages, from Claude Code's official `rate_limits` field couriered by the statusline, if any. */
     fiveHourPct: number | null;
     sevenDayPct: number | null;
     fiveHourResetsAt: number | null;
