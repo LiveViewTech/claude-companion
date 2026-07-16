@@ -8,6 +8,7 @@ export type ConfigUpdate = {
   advisor?: Partial<CccConfig["advisor"]>;
   guardian?: Partial<CccConfig["guardian"]>;
   naming?: Partial<CccConfig["naming"]>;
+  turnSignal?: Partial<Pick<CccConfig["turnSignal"], "sound" | "flash">>;
 };
 
 /** Which features a config update just switched OFF, so the caller can tear down in-flight state. */
@@ -44,6 +45,9 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
     if (cfg.guardian.action !== "off" && updates.guardian.action === "off") effects.guardianDisabled = true;
     cfg.guardian.action = updates.guardian.action;
   }
+
+  if (updates.turnSignal && typeof updates.turnSignal.sound === "boolean") cfg.turnSignal.sound = updates.turnSignal.sound;
+  if (updates.turnSignal && typeof updates.turnSignal.flash === "boolean") cfg.turnSignal.flash = updates.turnSignal.flash;
 
   return effects;
 }

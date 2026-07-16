@@ -20,13 +20,21 @@ let persisted: number;
  * Wires the config handlers exactly as index.ts does — using the REAL applyConfigUpdate
  * (not a copy) — so GET /api/config, POST /config, the in-place mutation, validation, and
  * persist path are exercised end-to-end over a real socket. `persisted` stands in for the
- * saveConfig(cfg) call.
+ * saveConfig(cfg) call. Also recomputes server.turnSignal on every update, exactly like
+ * index.ts's setConfig handler — this is the piece that regressed (server.turnSignal was a
+ * startup-only snapshot, so toggling turnSignal.flash from Controls never took effect until
+ * a daemon restart); keeping this test harness in lockstep with index.ts is what would have
+ * caught it.
  */
 function wireConfigHandlers(): void {
   server.handlers.getConfig = () => cfg;
   server.handlers.setConfig = (updates) => {
     applyConfigUpdate(cfg, updates as ConfigUpdate);
     persisted++;
+    server.turnSignal =
+      cfg.turnSignal.enabled && cfg.turnSignal.flash
+        ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
+        : null;
     return cfg;
   };
 }
@@ -42,6 +50,14 @@ async function postConfig(body: Record<string, unknown>): Promise<CccConfig> {
   });
   return (await r.json()) as CccConfig;
 }
+async function postTurn(body: Record<string, unknown>): Promise<{ ok: boolean; flashed: boolean }> {
+  const r = await fetch(`${base}/turn`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as { ok: boolean; flashed: boolean };
+}
 
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-cfg-"));
@@ -50,6 +66,7 @@ beforeEach(async () => {
   server = new Server(tracker, store, 0); // ephemeral port
   cfg = structuredClone(DEFAULTS);
   persisted = 0;
+  server.turnSignal = { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }; // matches DEFAULTS (enabled+flash both true)
   wireConfigHandlers();
   await server.listen();
   base = `http://127.0.0.1:${server.boundPort}`;
@@ -74,11 +91,14 @@ describe("config HTTP endpoints", () => {
       advisor: { enabled: false },
       naming: { enabled: false },
       guardian: { action: "handoff" },
+      turnSignal: { sound: false, flash: false },
     });
     expect(res.keepwarm.enabled).toBe(false);
     expect(res.advisor.enabled).toBe(false);
     expect(res.naming.enabled).toBe(false);
     expect(res.guardian.action).toBe("handoff");
+    expect(res.turnSignal.sound).toBe(false);
+    expect(res.turnSignal.flash).toBe(false);
     expect(persisted).toBe(1); // saveConfig-equivalent ran once
     // readable back on the next GET (same in-memory object the daemon serves)
     expect((await getConfig()).guardian.action).toBe("handoff");
@@ -102,6 +122,15 @@ describe("config HTTP endpoints", () => {
     expect(res.port).toBe(DEFAULTS.port);
     expect(res.turnSignal.enabled).toBe(DEFAULTS.turnSignal.enabled);
     expect(res.advisor.enabled).toBe(true); // not in the update
+  });
+
+  it("POST /config turnSignal.flash:false stops /turn from flashing immediately, no restart", async () => {
+    expect(await postTurn({ session_id: "a", reason: "done" })).toMatchObject({ flashed: true });
+    await postConfig({ turnSignal: { flash: false } });
+    expect(await postTurn({ session_id: "b", reason: "done" })).toMatchObject({ flashed: false });
+    // turning it back on re-arms the flash live too
+    await postConfig({ turnSignal: { flash: true } });
+    expect(await postTurn({ session_id: "c", reason: "done" })).toMatchObject({ flashed: true });
   });
 
   it("returns 400 on a malformed JSON body", async () => {
@@ -139,5 +168,15 @@ describe("applyConfigUpdate teardown effects", () => {
     applyConfigUpdate(c, { port: 9999, bogus: true, keepwarm: { enabled: false } } as never);
     expect(c.port).toBe(DEFAULTS.port); // port is not a live-updatable toggle
     expect(c.keepwarm).toBe(keepwarmRef); // mutated in place, same reference the engines hold
+  });
+
+  it("toggles turnSignal.sound and turnSignal.flash independently, leaving the rest of the block untouched", () => {
+    const c = structuredClone(DEFAULTS); // sound: true, flash: true
+    applyConfigUpdate(c, { turnSignal: { sound: false } });
+    expect(c.turnSignal.sound).toBe(false);
+    expect(c.turnSignal.flash).toBe(true); // not in the update
+    applyConfigUpdate(c, { turnSignal: { flash: false } });
+    expect(c.turnSignal.flash).toBe(false);
+    expect(c.turnSignal.enabled).toBe(DEFAULTS.turnSignal.enabled); // not a live-updatable field
   });
 });

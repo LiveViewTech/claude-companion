@@ -40,6 +40,8 @@ describe("dashboard controls (real index.html + controls.js)", () => {
     expect(document.getElementById("ctrl-advisor")).not.toBeNull();
     expect(document.getElementById("ctrl-naming")).not.toBeNull();
     expect(document.getElementById("ctrl-guardian")).not.toBeNull();
+    expect(document.getElementById("ctrl-sound")).not.toBeNull();
+    expect(document.getElementById("ctrl-flash")).not.toBeNull();
     // the guardian <select> must offer exactly the four actions the daemon accepts
     const opts = [...document.getElementById("ctrl-guardian").options].map((o) => o.value);
     expect(opts).toEqual(["off", "notify-only", "wrapup", "handoff"]);
@@ -47,13 +49,21 @@ describe("dashboard controls (real index.html + controls.js)", () => {
 
   it("reflects GET /api/config into the controls", async () => {
     globalThis.fetch = vi.fn(async () =>
-      jsonResponse({ keepwarm: { enabled: false }, advisor: { enabled: true }, naming: { enabled: true }, guardian: { action: "handoff" } }),
+      jsonResponse({
+        keepwarm: { enabled: false },
+        advisor: { enabled: true },
+        naming: { enabled: true },
+        guardian: { action: "handoff" },
+        turnSignal: { sound: false, flash: true },
+      }),
     );
     await controls.refreshControls();
     expect(document.getElementById("ctrl-keepwarm").checked).toBe(false);
     expect(document.getElementById("ctrl-advisor").checked).toBe(true);
     expect(document.getElementById("ctrl-naming").checked).toBe(true);
     expect(document.getElementById("ctrl-guardian").value).toBe("handoff");
+    expect(document.getElementById("ctrl-sound").checked).toBe(false);
+    expect(document.getElementById("ctrl-flash").checked).toBe(true);
   });
 
   it("toggling session naming POSTs its state to /config", async () => {
@@ -86,6 +96,43 @@ describe("dashboard controls (real index.html + controls.js)", () => {
     expect(post).toBeTruthy();
     expect(post.opts.method).toBe("POST");
     expect(JSON.parse(post.opts.body)).toEqual({ keepwarm: { enabled: true } });
+  });
+
+  it("toggling turn sound and turn flash each POST their own turnSignal field", async () => {
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      calls.push({ url, opts });
+      return jsonResponse({ guardian: { action: "notify-only" } });
+    });
+    controls.wireControls();
+    const snd = document.getElementById("ctrl-sound");
+    snd.checked = false;
+    snd.dispatchEvent(new Event("change"));
+    await tick();
+    const fls = document.getElementById("ctrl-flash");
+    fls.checked = false;
+    fls.dispatchEvent(new Event("change"));
+    await tick();
+    const posts = calls.filter((c) => c.url === "/config").map((c) => JSON.parse(c.opts.body));
+    expect(posts).toEqual([{ turnSignal: { sound: false } }, { turnSignal: { flash: false } }]);
+  });
+
+  it("snaps ctrl-sound/ctrl-flash back to the server echo when the daemon didn't apply the change", async () => {
+    // Regression: an older daemon build ignored an unrecognized turnSignal update and echoed
+    // the config back unchanged. The checkbox must reflect that (not the user's optimistic click),
+    // or the control silently lies about what's actually configured.
+    globalThis.fetch = vi.fn(async () => jsonResponse({ turnSignal: { sound: true, flash: true } }));
+    controls.wireControls();
+    const snd = document.getElementById("ctrl-sound");
+    const fls = document.getElementById("ctrl-flash");
+    snd.checked = false;
+    snd.dispatchEvent(new Event("change"));
+    await tick();
+    fls.checked = false;
+    fls.dispatchEvent(new Event("change"));
+    await tick();
+    expect(snd.checked).toBe(true); // snapped back — the update didn't actually take
+    expect(fls.checked).toBe(true);
   });
 
   it("changing the guardian select POSTs the action and re-syncs from the server echo", async () => {

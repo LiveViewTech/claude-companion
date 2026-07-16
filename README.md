@@ -50,7 +50,8 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
   *observed* TTL tier of the last cache write; toast at T-60s with the cold re-write $ you'd pay.
 - **Turn signal** — plays a sound + flashes the dashboard when Claude finishes, asks a question, or
   needs permission (replaces the Claude Notifier plugin). The sound is hook-driven so it fires even if
-  the daemon is down; the flash rides SSE. Config: `turnSignal.*` (e.g. `soundLeadMs`, per-reason `sounds`).
+  the daemon is down; the flash rides SSE. Sound and flash toggle independently from dashboard Controls
+  (or `turnSignal.sound` / `turnSignal.flash`); other knobs are config-only (e.g. `soundLeadMs`, per-reason `sounds`).
 - **Session naming** — each card is titled with an AI summary of the session's intent
   (hover the name for a paragraph-long description). The daemon runs `claude -p` headless
   through a toolless custom agent on a cheap model (~1.3k input tokens/call, measured);
@@ -65,7 +66,8 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
   usage endpoint), so they match the website account-wide — all machines/surfaces, correct billing
   cycle; the local transcript estimate becomes the tile tooltip and the offline fallback. "Today" is
   the meter delta since local midnight, and warns ("⚠ daemon gap") instead of showing a wrong number
-  if meter polling was down across midnight (stale baseline).
+  if meter polling was down across midnight (stale baseline) — the tooltip's fallback estimate is
+  this-device-only, not account-wide, so it can read low.
 - **Keep-warm (experimental, API-billing only)** — arm per session in the dashboard; a Stop hook
   keeps the turn open and issues a minimal `ok` turn just before TTL expiry. Refuses to arm on
   1h-tier (subscription) sessions; soft ping cap; **every ping is measured from the transcript and
@@ -113,12 +115,14 @@ Turning the optional features on/off:
   often it can fire per session. This is separate from the guardian's wrap-up delivery.
 - **Session naming** — `naming.enabled`; `naming.model` is passed to `claude -p --model`.
 - **Usage-limit guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`.
+- **Turn signal** — `turnSignal.sound` (audible alert) and `turnSignal.flash` (dashboard flash)
+  toggle independently; `turnSignal.enabled` and the rest of the block are config-only.
 - **Account meter** — `accountUsage.enabled` feeds the month/today tiles from the claude.ai Usage
   endpoint (`accountUsage.pollSeconds` between polls); off ⇒ tiles fall back to the local estimate.
   Config-only, not in Controls.
 
-The keep-warm, advisor, naming, and guardian settings are also live-togglable from the dashboard
-**Controls** panel (writes `config.json` and takes effect immediately, no daemon restart).
+The keep-warm, advisor, naming, guardian, and turn-signal sound/flash settings are also live-togglable
+from the dashboard **Controls** panel (writes `config.json` and takes effect immediately, no daemon restart).
 
 ## Cache economics cheat-sheet (why this exists)
 
@@ -130,7 +134,7 @@ The keep-warm, advisor, naming, and guardian settings are also live-togglable fr
 ## Development
 
 ```sh
-npm test          # vitest (116 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler)
+npm test          # vitest (118 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler)
 npm run typecheck
 ```
 

@@ -63,6 +63,8 @@ export async function main(): Promise<void> {
     server.accountRaw = () => ({ status: accountPoller!.status, raw: accountPoller!.lastResponse });
     accountPoller.start();
   }
+  // Startup snapshot; setConfig's handler below recomputes this on every live update so
+  // toggling turnSignal.flash/.enabled from Controls doesn't need a daemon restart.
   server.turnSignal =
     cfg.turnSignal.enabled && cfg.turnSignal.flash
       ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
@@ -226,6 +228,13 @@ export async function main(): Promise<void> {
         }
       }
     }
+    // server.turnSignal gates handleTurn()'s flash broadcast and is only a startup snapshot
+    // (see above) — recompute it on every update so toggling turnSignal.flash/.enabled from
+    // Controls takes effect immediately instead of waiting for a daemon restart.
+    server.turnSignal =
+      cfg.turnSignal.enabled && cfg.turnSignal.flash
+        ? { flashColor: cfg.turnSignal.flashColor, flashMs: cfg.turnSignal.flashMs }
+        : null;
     saveConfig(cfg);
     return cfg;
   };
