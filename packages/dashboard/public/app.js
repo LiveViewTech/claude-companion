@@ -125,7 +125,8 @@ async function refreshDayCost() {
       const since = new Date(dayMidnightGap.sinceMs).toLocaleString();
       dayCostEl.title =
         `Account meter wasn't polled across midnight (~${dayMidnightGap.gapMinutes} min gap from ${since}), ` +
-        `so "today" can't be measured against the meter. This-device estimate: ${usd(dayCostUsd)}.`;
+        `so "today" can't be measured against the meter. This-device estimate: ${usd(dayCostUsd)} ` +
+        `(tracks Claude usage on this machine only, not account-wide — likely a low estimate).`;
     } else if (typeof dayMeterUsd === "number") {
       // Account meter delta since local midnight — all surfaces, the same arithmetic
       // as the claude.ai usage page. Local estimate stays visible as the tooltip.
