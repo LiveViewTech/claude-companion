@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeSettingsPath } from "@ccc/core";
+import { ensureRtkBinary, rtkHookEntry, rtkStatus } from "./rtk-setup.ts";
 
 /**
  * Surgical settings.json editor: registers our statusline + hooks, preserving
@@ -68,11 +69,28 @@ function desiredHooks(): DesiredHook[] {
   ];
 }
 
-function isOurs(cmd: string): boolean {
-  return cmd.includes(CCC_MARKER);
+/**
+ * Marker test for "this command points into our repo".
+ *
+ * Case-INSENSITIVE on purpose: the marker is really the repo directory name, and
+ * `git clone` yields `Claude-Companion` (capitalized). A case-sensitive match made
+ * `ccc install` treat its own statusline as foreign and — worse — made `ccc
+ * uninstall` a silent no-op that left every hook behind.
+ */
+export function isOurs(cmd: string): boolean {
+  return cmd.toLowerCase().includes(CCC_MARKER);
 }
 
-export async function install(dryRun: boolean): Promise<number> {
+export interface InstallOptions {
+  dryRun?: boolean;
+  /** Skip the rtk check/install entirely (same flag name as `ccc launch --no-rtk`). */
+  noRtk?: boolean;
+  /** Pin the rtk release instead of resolving the latest. */
+  rtkVersion?: string;
+}
+
+export async function install(opts: InstallOptions = {}): Promise<number> {
+  const dryRun = opts.dryRun ?? false;
   const settingsPath = claudeSettingsPath();
   let settings: Record<string, unknown> = {};
   try {
@@ -84,14 +102,36 @@ export async function install(dryRun: boolean): Promise<number> {
     }
   }
 
+  // rtk first: the binary must exist on PATH before its hook is worth registering.
+  // Network work, so it happens before we start staging settings edits.
+  let rtkPresent = false;
+  if (opts.noRtk) {
+    console.log("rtk: skipped (--no-rtk).");
+  } else {
+    const res = await ensureRtkBinary({ dryRun, version: opts.rtkVersion });
+    rtkPresent = res.installed;
+    if (!rtkPresent && dryRun) rtkPresent = rtkStatus().installed;
+    if (!rtkPresent && !dryRun) {
+      console.log("rtk: unavailable — continuing without the rtk hook (ccc works fine without it).");
+    }
+    if (rtkPresent && !rtkStatus().ripgrep) {
+      console.log("rtk: note — ripgrep (rg) is missing; some rtk filters shell out to it. Install it with your package manager.");
+    }
+  }
+
   const changes: string[] = [];
   const p = repoPaths();
 
   // Statusline (only set if absent or already ours — never clobber a foreign statusline).
   const existingSL = settings["statusLine"] as { command?: string } | undefined;
   if (!existingSL || (existingSL.command && isOurs(existingSL.command))) {
-    settings["statusLine"] = { type: "command", command: nodeCmd(p.statusline), padding: 0, refreshInterval: 1000 };
-    changes.push(`statusLine -> ccc statusline (refresh 1s)`);
+    const desiredSL = { type: "command", command: nodeCmd(p.statusline), padding: 0, refreshInterval: 1000 };
+    // Only report a change when the value actually differs, so a re-run of an
+    // up-to-date install still says "nothing to change".
+    if (JSON.stringify(existingSL) !== JSON.stringify(desiredSL)) {
+      settings["statusLine"] = desiredSL;
+      changes.push(`statusLine -> ccc statusline (refresh 1s)`);
+    }
   } else {
     console.log(`note: a non-ccc statusline is configured (${existingSL.command}); leaving it alone.`);
     console.log(`      to chain it, have it exec our script too, or remove it and re-run ccc install.`);
@@ -101,7 +141,15 @@ export async function install(dryRun: boolean): Promise<number> {
   // (not "is it ours?"), so a second ccc hook on the same event — e.g. turn-signal
   // alongside keep-warm on Stop — is added rather than mistaken for already-present.
   const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
-  for (const { event, entry, label } of desiredHooks()) {
+  const desired = desiredHooks();
+  // rtk's hook is NOT ccc-marked: it carries no CCC_MARKER, so `ccc uninstall`
+  // leaves it in place (it isn't ours to remove — `rtk init -g --uninstall` owns
+  // that). Dedup is by exact command string, so a hook already registered by
+  // `rtk init -g` is recognized rather than duplicated.
+  if (rtkPresent) {
+    desired.push({ event: "PreToolUse", entry: rtkHookEntry(), label: "rtk auto-rewrite" });
+  }
+  for (const { event, entry, label } of desired) {
     const list = hooks[event] ?? [];
     const cmd = entry.hooks[0]!.command;
     const present = list.some((e) => e.hooks?.some((h) => h.command === cmd));

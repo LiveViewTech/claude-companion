@@ -5,6 +5,8 @@ import { doctor } from "./doctor.ts";
 import { openDashboard } from "./open.ts";
 import { install, uninstall } from "./install.ts";
 import { launch } from "./launch.ts";
+import { rtkCommand } from "./rtk-setup.ts";
+import { prices } from "./prices.ts";
 
 const [, , cmd, ...args] = process.argv;
 
@@ -24,10 +26,20 @@ async function run(): Promise<number> {
       return openDashboard();
     case "doctor":
       return doctor();
-    case "install":
-      return install(args.includes("--dry-run"));
+    case "install": {
+      const vIdx = args.indexOf("--rtk-version");
+      return install({
+        dryRun: args.includes("--dry-run"),
+        noRtk: args.includes("--no-rtk"),
+        rtkVersion: vIdx >= 0 ? args[vIdx + 1] : undefined,
+      });
+    }
     case "uninstall":
       return uninstall();
+    case "rtk":
+      return rtkCommand(args);
+    case "prices":
+      return prices(args);
     case "launch":
       return launch(args, false);
     case "code":
@@ -38,8 +50,12 @@ async function run(): Promise<number> {
       console.log(`ccc — Claude Code companion
 
 commands:
-  ccc install [--dry-run]        register statusline + hooks in ~/.claude/settings.json (with backup)
-  ccc uninstall                  remove our statusline + hooks (with backup)
+  ccc install [--dry-run] [--no-rtk] [--rtk-version vX.Y.Z]
+                                 register statusline + hooks in ~/.claude/settings.json (with backup);
+                                 installs rtk + its hook too unless --no-rtk
+  ccc uninstall                  remove our statusline + hooks (with backup; leaves rtk alone)
+  ccc rtk [--check] [--force]    report rtk binary/hook/ripgrep status; install the binary if missing
+  ccc prices [--refresh]         show model rates (built-in vs auto-resolved); --refresh re-reads the published table
   ccc launch [--ttl 1h|5m] [--no-rtk] [-- args]   start claude with a cache-TTL profile
   ccc code [dir] [--ttl 1h|5m]   start VS Code with a cache-TTL profile
   ccc daemon start|stop|status   control the background daemon

@@ -18,6 +18,7 @@ import { launchTerminal } from "./launcher.ts";
 import { computeExactAttribution } from "./attribution.ts";
 import { AccountUsagePoller } from "./account-usage.ts";
 import { WindowSampler } from "./window-sampler.ts";
+import { PriceResolver } from "./price-resolver.ts";
 
 export async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -28,10 +29,26 @@ export async function main(): Promise<void> {
   const store = new Store(path.join(paths.state, "ccc.db"));
   const tracker = new SessionTracker(store);
   tracker.warnBeforeMs = cfg.warnBeforeSeconds * 1000;
+
+  // Model rates for anything released after this build. Constructed before the watcher
+  // starts so cached rates are registered with core ahead of the backfill replay —
+  // otherwise the first pass would cost a new model's historical turns at $0.
+  const priceResolver = new PriceResolver({
+    enabled: cfg.pricing.autoResolve,
+    refreshDays: cfg.pricing.refreshDays,
+    log: (msg) => console.log(msg),
+  });
+  tracker.onModelSeen = (modelId) => priceResolver.noteModel(modelId);
+  if (cfg.pricing.autoResolve) {
+    // One refresh at boot so a rate change lands without waiting for an unpriced model
+    // to show up. Rate-limited internally; failure is logged and ignored.
+    void priceResolver.resolve();
+  }
   const stateWriter = new StateWriter(paths.state);
   const watcher = new TranscriptWatcher(claudeProjectsDir(), tracker);
   const server = new Server(tracker, store, cfg.port);
   server.monthlyBudgetUsd = cfg.monthlyBudgetUsd;
+  server.pricingStatus = () => priceResolver.status;
 
   // Account usage: the claude.ai meter itself, so the month tile matches the website.
   let accountPoller: AccountUsagePoller | null = null;

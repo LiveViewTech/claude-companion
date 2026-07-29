@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { appPaths, claudeProjectsDir, parseLine, ttlTierOf, turnCost } from "@ccc/core";
 import { loadConfig } from "@ccc/daemon/config";
+import { applyCachedPrices } from "@ccc/daemon/price-resolver";
+import { rtkStatus } from "./rtk-setup.ts";
 
 /**
  * Schema-drift canary + health check:
@@ -11,6 +13,9 @@ import { loadConfig } from "@ccc/daemon/config";
  */
 export async function doctor(): Promise<number> {
   const cfg = loadConfig();
+  // Must precede the transcript scan below: without the resolved rates registered, a
+  // model the cache can price would be reported as "missing from pricing table".
+  const priceCache = applyCachedPrices();
   const projects = claudeProjectsDir();
   console.log(`transcripts: ${projects}`);
 
@@ -62,9 +67,42 @@ export async function doctor(): Promise<number> {
   console.log(`ttl writes observed — 5m: ${tier5m}, 1h: ${tier1h}`);
   if (unknownModels.size > 0) {
     console.log(`⚠ models missing from pricing table: ${[...unknownModels].join(", ")} — costs for these read $0`);
+    console.log(
+      cfg.pricing.autoResolve
+        ? "  auto-resolve is on: the daemon looks these up in the published table (see: ccc prices)"
+        : "  auto-resolve is off (pricing.autoResolve) — enable it, or run: ccc prices --refresh",
+    );
   }
 
   let ok = true;
+
+  // Provenance for rates that came from the published table rather than the build.
+  const resolvedCount = Object.keys(priceCache.entries).length;
+  const minCount = Object.keys(priceCache.cacheMinimums).length;
+  if (resolvedCount > 0 || minCount > 0) {
+    const age = priceCache.lastFetchAt
+      ? `${Math.max(0, Math.floor((Date.now() - priceCache.lastFetchAt) / 86_400_000))}d old`
+      : "age unknown";
+    console.log(
+      `pricing: ${resolvedCount} rate(s) + ${minCount} cache minimum(s) auto-resolved from the docs (${age})`,
+    );
+  }
+  if (priceCache.minimumDrift.length > 0) {
+    // Not a failure — the published value is in use. Flagged so the built-in table can catch up.
+    console.log(
+      `note: built-in cache minimums are stale for ${priceCache.minimumDrift
+        .map((d) => `${d.modelId} (${d.builtIn}→${d.published})`)
+        .join(", ")} — published values in use`,
+    );
+  }
+  if (priceCache.multiplierMismatch.length > 0) {
+    console.log(
+      `⚠ published cache columns disagree with ccc's multipliers for ${priceCache.multiplierMismatch.join(", ")} — ` +
+        "the 1.25x/2x/0.1x constants may be stale",
+    );
+    ok = false;
+  }
+
   if (parseErrors > lines.length * 0.01) {
     console.log("⚠ SCHEMA DRIFT? >1% of lines failed to parse — adapter needs a look");
     ok = false;
@@ -72,6 +110,17 @@ export async function doctor(): Promise<number> {
   if (assistantWithUsage > 0 && withEphemeral === 0) {
     console.log("⚠ SCHEMA DRIFT: usage.cache_creation breakdown missing — TTL tier detection degraded to config guessing");
     ok = false;
+  }
+
+  // rtk: the dashboard's rtk panel is fed by `rtk gain`, which reports nothing at
+  // all when rtk is absent — so surface it here rather than leaving an empty tile.
+  const rtk = rtkStatus();
+  if (!rtk.installed) {
+    console.log("rtk: not on PATH — no command-output compression (run: ccc rtk)");
+  } else if (!rtk.hookRegistered) {
+    console.log(`rtk: ${rtk.version} installed but no PreToolUse hook — commands are NOT rewritten (run: ccc install)`);
+  } else {
+    console.log(`rtk: ${rtk.version}, hook registered${rtk.ripgrep ? "" : " (⚠ ripgrep missing — some filters need rg)"}`);
   }
 
   // Daemon health

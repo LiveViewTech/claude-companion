@@ -42,6 +42,12 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
   private warnTimers = new Map<string, NodeJS.Timeout[]>();
   /** Warn this many ms before cache expiry. */
   warnBeforeMs = 60_000;
+  /**
+   * Notified with every model id observed in a transcript, before the turn is costed.
+   * Wired to the PriceResolver so a model released after this build gets its rates
+   * looked up instead of costing $0 forever. Optional — tests and the CLI leave it unset.
+   */
+  onModelSeen?: (modelId: string) => void;
 
   private store: Store;
 
@@ -99,6 +105,11 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
     if (entry.usage) {
       const usage = entry.usage;
       const model = entry.model ?? state.model ?? "unknown";
+      // Give the resolver a chance to learn this model's rates before we cost the turn.
+      // Synchronous and cheap (a set membership test unless the model is unpriceable);
+      // any actual fetch happens in the background, so this turn may still cost $0 and
+      // later turns pick up the resolved rate.
+      this.onModelSeen?.(model);
       const cost = turnCost(usage, model, entry.timestamp);
       const prefix = prefixTokens(usage);
       const inserted = this.store.insertTurn({

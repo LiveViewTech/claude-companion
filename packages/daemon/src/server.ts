@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SessionState } from "@ccc/core";
+import { builtInPriceIds, resolvedPriceIds, type SessionState } from "@ccc/core";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
 import { classStats, computeExactAttribution, toolLeaderboard } from "./attribution.ts";
@@ -38,6 +38,12 @@ export class Server {
   monthlyBudgetUsd: number | null = null;
   /** Live account usage from Anthropic's OAuth endpoint; null when the poller is disabled. Set by index.ts. */
   accountUsage: (() => unknown) | null = null;
+  /**
+   * Runtime-resolved model rates + provenance, for /api/pricing. Lets a caller tell a
+   * scraped rate from a built-in one, which matters before trusting a dollar figure.
+   * Set by index.ts.
+   */
+  pricingStatus: (() => unknown) | null = null;
   /** Parsed status + raw endpoint response, for /api/account drift debugging. Set by index.ts. */
   accountRaw: (() => unknown) | null = null;
   /** Sessions whose cwd is this directory are hidden from the dashboard (the namer's own `claude -p` runs). */
@@ -111,6 +117,14 @@ export class Server {
         // rtk's own measured savings (ground truth — the transcript can't see
         // hook-rewritten commands, so there's no meaningful A/B; see rtk-gain.ts).
         return void this.json(res, { gain: rtkGain() });
+      }
+      if (p === "/api/pricing") {
+        // Which rates are built in vs resolved from the published table, and when.
+        return void this.json(res, {
+          builtIn: builtInPriceIds(),
+          resolved: resolvedPriceIds(),
+          status: this.pricingStatus ? this.pricingStatus() : null,
+        });
       }
       if (p === "/api/habits") {
         const weekAgo = Date.now() - 7 * 86_400_000;

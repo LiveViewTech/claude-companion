@@ -1,5 +1,12 @@
 # scripts/
 
+> **These are no longer the primary path.** `ccc install` now checks for rtk and installs
+> it natively (SHA-256-verified download, no `curl | sh`), then registers the hook in the
+> same settings write — see the README's Quick start, or `ccc rtk` standalone. Reach for the
+> scripts below only if you want rtk's **full** `init -g` footprint (which also writes
+> `~/.claude/RTK.md` + an `@RTK.md` reference into your global `CLAUDE.md`) or ripgrep
+> auto-installed via sudo — neither of which `ccc install` does.
+
 Helper installers for [rtk (Rust Token Killer)](https://github.com/rtk-ai/rtk) +
 its Claude Code hook. rtk is a Rust CLI proxy that filters/compresses dev-command
 output to cut LLM token use by ~60-90%; ccc's dashboard measures the actual savings.

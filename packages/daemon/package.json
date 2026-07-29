@@ -5,7 +5,8 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./price-resolver": "./src/price-resolver.ts"
   },
   "dependencies": {
     "@ccc/core": "*",

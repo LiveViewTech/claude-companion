@@ -16,6 +16,25 @@ export interface CccConfig {
    */
   monthlyBudgetUsd: number | null;
   /**
+   * Automatic rate lookup for models released after this build. When a transcript
+   * carries a model the built-in table can't price, the daemon fetches Anthropic's
+   * published pricing table and caches the rate — otherwise every cost for that model
+   * silently reads $0 until someone edits pricing.ts (which is what happened for
+   * claude-opus-5).
+   *
+   * This is the only feature that makes an outbound request to platform.claude.com:
+   * unauthenticated GET of a public docs page, no request body, nothing about your usage
+   * leaves the machine. Set `autoResolve: false` to confine the daemon's network access
+   * to the usage endpoint; new models then read $0 and `ccc doctor` names them.
+   *
+   * `refreshDays` re-checks already-resolved rates — a cached entry is a flattened
+   * snapshot, and published rates do change (an expiring promotional rate is the usual case).
+   */
+  pricing: {
+    autoResolve: boolean;
+    refreshDays: number;
+  };
+  /**
    * Account-usage sync — polls Anthropic's OAuth usage endpoint (the source behind
    * the claude.ai Settings -> Usage page) with the Claude Code login token, so the
    * dashboard's monthly tile matches the website exactly: all devices/surfaces and
@@ -113,6 +132,7 @@ export const DEFAULTS: CccConfig = {
   toasts: true,
   warnBeforeSeconds: 60,
   monthlyBudgetUsd: null,
+  pricing: { autoResolve: true, refreshDays: 7 },
   accountUsage: { enabled: true, pollSeconds: 60 },
   guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
   keepwarm: { enabled: true, maxPingsPerIdle: 12 },
@@ -142,6 +162,7 @@ export function loadConfig(): CccConfig {
     return {
       ...DEFAULTS,
       ...raw,
+      pricing: { ...DEFAULTS.pricing, ...(raw.pricing ?? {}) },
       accountUsage: { ...DEFAULTS.accountUsage, ...(raw.accountUsage ?? {}) },
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
       keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
