@@ -165,6 +165,99 @@ describe("dashboard controls (real index.html + controls.js)", () => {
     expect(typeof document.getElementById("ctrl-keepwarm").onchange).toBe("function");
   });
 
+  it("card view: the select offers exactly the two views and starts on advanced markup", () => {
+    const cv = document.getElementById("ctrl-cardview");
+    expect(cv).not.toBeNull();
+    expect([...cv.options].map((o) => o.value)).toEqual(["advanced", "simple"]);
+    expect(document.body.classList.contains("view-simple")).toBe(false);
+  });
+
+  it("card view: /api/config drives body.view-simple and the select", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ dashboard: { cardView: "simple" } }));
+    await controls.refreshControls();
+    expect(document.getElementById("ctrl-cardview").value).toBe("simple");
+    expect(document.body.classList.contains("view-simple")).toBe(true);
+  });
+
+  it("card view: a config without a dashboard block falls back to advanced", async () => {
+    document.body.classList.add("view-simple");
+    globalThis.fetch = vi.fn(async () => jsonResponse({ keepwarm: { enabled: true } }));
+    await controls.refreshControls();
+    expect(document.getElementById("ctrl-cardview").value).toBe("advanced");
+    expect(document.body.classList.contains("view-simple")).toBe(false);
+  });
+
+  it("card view: changing the select applies immediately and POSTs the new view", async () => {
+    let postedBody = null;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      if (url === "/config") {
+        postedBody = JSON.parse(opts.body);
+        return jsonResponse({ dashboard: { cardView: "simple" } });
+      }
+      return jsonResponse({});
+    });
+    controls.wireControls();
+    const cv = document.getElementById("ctrl-cardview");
+    cv.value = "simple";
+    cv.dispatchEvent(new Event("change"));
+    // Applied optimistically, before the POST resolves — it's a view preference, not a daemon behavior.
+    expect(document.body.classList.contains("view-simple")).toBe(true);
+    await tick();
+    expect(postedBody).toEqual({ dashboard: { cardView: "simple" } });
+  });
+
+  it("card view: an older daemon that echoes the config unchanged snaps the view back", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ dashboard: { cardView: "advanced" } }));
+    controls.wireControls();
+    const cv = document.getElementById("ctrl-cardview");
+    cv.value = "simple";
+    cv.dispatchEvent(new Event("change"));
+    await tick();
+    expect(cv.value).toBe("advanced");
+    expect(document.body.classList.contains("view-simple")).toBe(false);
+  });
+
+  it("Controls, rtk and Events are collapsible like the analytics sections", () => {
+    const summaries = [...document.querySelectorAll(".feed-wrap details.collapsible > summary")].map(
+      (s) => s.textContent.trim().split(/\s+/)[0].toLowerCase(),
+    );
+    for (const name of ["controls", "rtk", "events"]) expect(summaries).toContain(name);
+    // Controls hosts the card-view toggle, so it must not start collapsed.
+    expect(document.getElementById("ctrl-cardview").closest("details").open).toBe(true);
+  });
+
+  it("card view: loading into simple folds every section below the cards", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ dashboard: { cardView: "simple" } }));
+    await controls.refreshControls();
+    const sections = [...document.querySelectorAll("main details.collapsible")];
+    expect(sections.length).toBeGreaterThanOrEqual(5);
+    expect(sections.every((d) => d.open === false)).toBe(true);
+  });
+
+  it("card view: switching to simple folds everything EXCEPT the Controls panel in use", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ dashboard: { cardView: "simple" } }));
+    controls.wireControls();
+    const cv = document.getElementById("ctrl-cardview");
+    cv.value = "simple";
+    cv.dispatchEvent(new Event("change"));
+    await tick();
+    const controlsPanel = cv.closest("details");
+    expect(controlsPanel.open).toBe(true); // the user is standing in it
+    const others = [...document.querySelectorAll("main details.collapsible")].filter((d) => d !== controlsPanel);
+    expect(others.every((d) => d.open === false)).toBe(true);
+  });
+
+  it("card view: switching back to advanced unfolds the sections again", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ dashboard: { cardView: "advanced" } }));
+    for (const d of document.querySelectorAll("main details.collapsible")) d.open = false;
+    controls.wireControls();
+    const cv = document.getElementById("ctrl-cardview");
+    cv.value = "advanced";
+    cv.dispatchEvent(new Event("change"));
+    await tick();
+    expect([...document.querySelectorAll("main details.collapsible")].every((d) => d.open)).toBe(true);
+  });
+
   it("survives a daemon-down fetch rejection without throwing", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new Error("ECONNREFUSED");

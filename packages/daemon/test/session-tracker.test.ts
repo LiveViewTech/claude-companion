@@ -84,8 +84,8 @@ describe("SessionTracker", () => {
     ingest(assistantLine({ uuid: "px1", ts: "2026-07-11T10:00:00.000Z", write5m: 50_000, input: 100, output: 500 }));
     const s = tracker.get("sess-t")!;
     expect(s.prefixTaxUsd).toBeCloseTo(0.0501, 6);
-    // Same prefix priced on Opus 4.8 ($5/M) would be half — surfaced for the switch-vs-fresh compare.
-    expect(s.prefixTaxByModel["claude-opus-4-8"]).toBeCloseTo(0.02505, 6);
+    // Same prefix priced on Opus 5 ($5/M) would be half — surfaced for the switch-vs-fresh compare.
+    expect(s.prefixTaxByModel["claude-opus-5"]).toBeCloseTo(0.02505, 6);
     expect(s.prefixTaxByModel["claude-fable-5"]).toBeCloseTo(0.0501, 6);
   });
 

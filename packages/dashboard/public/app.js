@@ -282,10 +282,11 @@ function fillCard(card, s) {
   const kw = s.keepwarm || {};
   kwBtn.textContent = kw.armed ? `armed ⚡${kw.pings}` : "arm";
   kwBtn.className = `kw-btn ${kw.armed ? "armed" : ""}`;
+  const allow1h = !!(window.cccConfig && window.cccConfig.keepwarm && window.cccConfig.keepwarm.allow1hArm);
   kwInfo.textContent = kw.armed
     ? `net ${kw.netSavedUsd >= 0 ? "+" : ""}${usd(Math.abs(kw.netSavedUsd))}`
-    : s.ttlTier === "1h"
-      ? "1h TTL — not needed"
+    : s.ttlTier === "1h" && !allow1h
+      ? "1h TTL"
       : (kw.reason || "");
   kwBtn.onclick = async () => {
     try {

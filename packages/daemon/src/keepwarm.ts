@@ -10,7 +10,7 @@ import type { Store } from "./store.ts";
  * the first cache MISS auto-disarms.
  *
  * Gates (all must pass to arm or authorize):
- *  - last cache write was 5m-tier (1h-tier sessions have nothing to save)
+ *  - last cache write was 5m-tier (1h-tier is refused unless keepwarm.allow1hArm is on)
  *  - prefix >= the model's minimum cacheable size
  *  - pings this idle period < soft cap (config, user-overridable)
  */
@@ -64,10 +64,9 @@ export class KeepWarm {
   /** Why keep-warm must NOT run right now; null = allowed. */
   private gate(state: SessionState): string | null {
     if (!this.cfg.keepwarm.enabled) return "keep-warm disabled in settings";
-    if (state.ttlTier !== "5m") {
-      return state.ttlTier === "1h"
-        ? "session is on the 1h TTL (subscription) — nothing to keep warm"
-        : "no cache write observed yet";
+    if (state.ttlTier == null) return "no cache write observed yet";
+    if (state.ttlTier === "1h" && !this.cfg.keepwarm.allow1hArm) {
+      return "session is on the 1h TTL (subscription) — nothing to keep warm";
     }
     if (!state.model) return "model unknown";
     const min = minCacheablePrefix(state.model);

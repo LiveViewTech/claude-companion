@@ -97,6 +97,18 @@ describe("KeepWarm gates", () => {
     expect(res.reason).toMatch(/1h TTL/);
   });
 
+  it("arms on the 1h tier when allow1hArm is enabled", () => {
+    const kw = new KeepWarm({
+      tracker,
+      store,
+      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, allow1hArm: true } },
+      onEvent: (kind, sid) => events.push({ kind, sid }),
+    });
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);
+    const res = kw.setArmed(SID, true) as { armed: boolean; reason: string };
+    expect(res.armed).toBe(true);
+  });
+
   it("refuses below the cacheable minimum", () => {
     tracker.ingest(turn({ uuid: "a", ts: "2026-07-11T10:00:00.000Z", w5: 500, input: 0 }), "proj", false);
     const res = keepwarm.setArmed(SID, true) as { armed: boolean; reason: string };

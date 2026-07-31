@@ -1,6 +1,7 @@
 import type { CccConfig } from "./config.ts";
 
 const GUARDIAN_ACTIONS: readonly CccConfig["guardian"]["action"][] = ["off", "notify-only", "wrapup", "handoff"];
+const CARD_VIEWS: readonly CccConfig["dashboard"]["cardView"][] = ["simple", "advanced"];
 
 /** The live-updatable subset of the config the dashboard can PATCH (each block optional/partial). */
 export type ConfigUpdate = {
@@ -9,6 +10,7 @@ export type ConfigUpdate = {
   guardian?: Partial<CccConfig["guardian"]>;
   naming?: Partial<CccConfig["naming"]>;
   turnSignal?: Partial<Pick<CccConfig["turnSignal"], "sound" | "flash">>;
+  dashboard?: Partial<CccConfig["dashboard"]>;
 };
 
 /** Which features a config update just switched OFF, so the caller can tear down in-flight state. */
@@ -33,6 +35,9 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
     if (cfg.keepwarm.enabled && !updates.keepwarm.enabled) effects.keepwarmDisabled = true;
     cfg.keepwarm.enabled = updates.keepwarm.enabled;
   }
+  if (updates.keepwarm && typeof updates.keepwarm.allow1hArm === "boolean") {
+    cfg.keepwarm.allow1hArm = updates.keepwarm.allow1hArm;
+  }
 
   if (updates.naming && typeof updates.naming.enabled === "boolean") cfg.naming.enabled = updates.naming.enabled;
 
@@ -48,6 +53,11 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
 
   if (updates.turnSignal && typeof updates.turnSignal.sound === "boolean") cfg.turnSignal.sound = updates.turnSignal.sound;
   if (updates.turnSignal && typeof updates.turnSignal.flash === "boolean") cfg.turnSignal.flash = updates.turnSignal.flash;
+
+  // View-only: the dashboard reads this back on load so the card density survives a reload.
+  if (updates.dashboard && typeof updates.dashboard.cardView === "string" && CARD_VIEWS.includes(updates.dashboard.cardView)) {
+    cfg.dashboard.cardView = updates.dashboard.cardView;
+  }
 
   return effects;
 }

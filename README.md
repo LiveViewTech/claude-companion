@@ -60,6 +60,60 @@ with `rtk init -g --uninstall`.
 | `ccc open` | Dashboard (countdown rings, month/today meter + costs, cache economics, tokens-by-tool, rtk verdict) |
 | `ccc doctor` | Transcript schema-drift canary, TTL observation, daemon health |
 
+The table uses a bare `ccc`, which exists once you `npm link` from the repo root. Without that, prefix
+every command with the interpreter — `node packages/cli/src/ccc.ts <command>` — from the repo directory.
+
+## Starting a session with a cache TTL (1h / 5m)
+
+Claude Code chooses its prompt-cache TTL from environment variables that are read **once, at session
+start** — you cannot change the TTL of a session that is already running. `ccc launch` (terminal) and
+`ccc code` (VS Code) set those variables and start the session for you.
+
+| You want | Command | Env it sets |
+|---|---|---|
+| 1-hour cache | `ccc launch --ttl 1h` | `ENABLE_PROMPT_CACHING_1H=1` |
+| 5-minute cache | `ccc launch --ttl 5m` | `FORCE_PROMPT_CACHING_5M=1` |
+
+### Terminal (CLI sessions)
+
+```sh
+ccc launch --ttl 1h                       # 1-hour prompt cache
+ccc launch --ttl 5m                       # 5-minute prompt cache
+ccc launch --ttl 1h --no-rtk              # ...with rtk's hooks stripped for this session only
+ccc launch --ttl 1h -- --model opus       # everything after `--` is passed through to `claude`
+```
+
+`ccc launch` runs `claude` in the foreground with your terminal attached, so it behaves exactly like
+typing `claude` yourself. `--no-rtk` copies your settings minus rtk's hook entries to a temp file and
+passes it as `--settings`; it is CLI-only, because the VS Code extension always reads the standard
+settings file.
+
+### VS Code (extension sessions)
+
+```sh
+ccc code --ttl 1h                         # current directory
+ccc code . --ttl 5m
+ccc code ~/code/some-project --ttl 1h
+```
+
+This spawns VS Code **detached** with the TTL variable in its environment. Every Claude session started
+inside that window — including the extension's — inherits it, because the extension is a child of that
+Code process. The directory argument is optional and defaults to `.`.
+
+Two consequences worth knowing: a Code window that's already open won't pick up the new TTL (VS Code
+reuses the running instance rather than re-reading the env, so open a **new window** or fully quit Code
+first), and the setting is per-window, not global.
+
+### Which one do you want?
+
+1h is free on subscription plans (Pro/Max) and is the one to use for long sessions — it drops back to
+5m if you spill into overage billing. 5m is the API-key default. Keep-warm deliberately refuses to arm
+on 1h-tier sessions, since there is nothing to save there.
+
+Don't trust the flag — trust the measurement. The dashboard countdown ring and `ccc doctor` both report
+the TTL tier that the transcript's `cache_creation.ephemeral_*` breakdown says was **actually** used,
+which is the only way to catch a profile that didn't take.
+
 ## Features
 
 - **Cache countdown** — statusline `⏱ 4:37 (5m)` and dashboard ring, computed from the
@@ -68,6 +122,8 @@ with `rtk init -g --uninstall`.
   needs permission (replaces the Claude Notifier plugin). The sound is hook-driven so it fires even if
   the daemon is down; the flash rides SSE. Sound and flash toggle independently from dashboard Controls
   (or `turnSignal.sound` / `turnSignal.flash`); other knobs are config-only (e.g. `soundLeadMs`, per-reason `sounds`).
+  Sounds come from the platform's own set (Windows `tada`/`chimes`/`notify`, macOS `Glass`/`Ping`/`Funk`,
+  Linux's XDG sound theme) — see [Turn-signal sounds](#turn-signal-sounds).
 - **Session naming** — each card is titled with an AI summary of the session's intent
   (hover the name for a paragraph-long description). The daemon runs `claude -p` headless
   through a toolless custom agent on a cheap model (~1.3k input tokens/call, measured);
@@ -139,7 +195,8 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
   "keepwarm": { "enabled": true, "maxPingsPerIdle": 12 },
   "advisor": { "enabled": true, "nudgeEvery": 10 },
   "naming": { "enabled": true, "model": "haiku" },
-  "turnSignal": { "enabled": true, "sound": true, "flash": true, "soundLeadMs": 750 }
+  "turnSignal": { "enabled": true, "sound": true, "flash": true, "soundLeadMs": 750 },
+  "dashboard": { "cardView": "advanced" }
 }
 ```
 
@@ -157,6 +214,11 @@ Turning the optional features on/off:
 - **Usage-limit guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`.
 - **Turn signal** — `turnSignal.sound` (audible alert) and `turnSignal.flash` (dashboard flash)
   toggle independently; `turnSignal.enabled` and the rest of the block are config-only.
+- **Card view** — `dashboard.cardView`: `advanced` (default) is the full session card; `simple` keeps
+  only **Session cost**, **Cost / turn** and **Cold re-write**, stacked above the cache ring, and hides
+  the rest of the card (…by model, Switch model, Keep-warm, the context-prefix and fresh-chat notes).
+  Simple also loads with every section below the cards folded, so the page is just the cards. View-only —
+  the daemon still measures everything either way, so switching back shows the same numbers. Also in Controls.
 - **Model-rate auto-resolve** — `pricing.autoResolve` looks up rates and cache minimums for
   models released after this build (see the feature note above); `pricing.refreshDays`
   re-checks already-resolved values. Off ⇒ an unknown model costs $0, its cache minimum falls
@@ -165,8 +227,46 @@ Turning the optional features on/off:
   endpoint (`accountUsage.pollSeconds` between polls); off ⇒ tiles fall back to the local estimate.
   Config-only, not in Controls.
 
-The keep-warm, advisor, naming, guardian, and turn-signal sound/flash settings are also live-togglable
+The keep-warm, advisor, naming, guardian, card-view and turn-signal sound/flash settings are also live-togglable
 from the dashboard **Controls** panel (writes `config.json` and takes effect immediately, no daemon restart).
+Every dashboard section is collapsible — click its heading to fold it away.
+
+### Turn-signal sounds
+
+Each reason gets its own sound, taken from whatever the platform already ships:
+
+| Reason | Windows | macOS | Linux (XDG sound theme) |
+|---|---|---|---|
+| `done` — Claude finished | `tada.wav` | `Glass.aiff` | `complete` |
+| `question` — Claude is asking | `chimes.wav` | `Ping.aiff` | `message` |
+| `permission` — needs approval | `notify.wav` | `Funk.aiff` | `dialog-information` |
+
+Override any of them with an absolute path in `turnSignal.sounds` (`""` = platform default):
+
+```json
+{ "turnSignal": { "sounds": { "done": "/home/me/sounds/tada.wav", "question": "", "permission": "" } } }
+```
+
+A configured path that no longer exists falls back to the platform default instead of going silent.
+
+**Linux specifics.** There is no single guaranteed sound file or audio player on Linux, so the hook
+resolves both at play time. It searches `$XDG_DATA_HOME/sounds`, `/usr/local/share/sounds` and
+`/usr/share/sounds` across the `freedesktop`, `Yaru`, `gnome`, `ubuntu` and `oxygen` themes for
+`.oga`/`.ogg`/`.wav`, and picks the first player actually installed from `pw-play` (PipeWire),
+`paplay` (PulseAudio), `canberra-gtk-play`, `ffplay`, `mpv`, `ogg123`, `play` (sox), `aplay`, `cvlc`.
+
+The ordering matters for a specific reason: **`aplay` has no decoder.** Handed a compressed file it
+doesn't fail — it falls back to RAW playback and renders the Vorbis bytes as samples, which comes out
+as several seconds of static. So `aplay` is only ever offered `.wav`/`.au`, and `ogg123` only
+`.oga`/`.ogg`. If no sound theme is installed at all, or the only player present can't decode the theme's
+format, the hook synthesizes a short chime WAV into the state dir (`sound/ccc-<reason>.wav`) and plays
+that — so Linux is never silent and never static.
+
+If you hear nothing on Linux, install a player and a theme:
+`sudo apt install pipewire-bin sound-theme-freedesktop` (or `pulseaudio-utils` on a PulseAudio box).
+
+`turnSignal.soundLeadMs` (default 750) is Windows-only: it prepends that much silence to the WAV so the
+audio endpoint's spin-up clips the silence instead of the start of the sound.
 
 ## Cache economics cheat-sheet (why this exists)
 
@@ -178,7 +278,7 @@ from the dashboard **Controls** panel (writes `config.json` and takes effect imm
 ## Development
 
 ```sh
-npm test          # vitest (205 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler, rtk-setup, install-marker, price-docs, price-resolver)
+npm test          # vitest (222 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler, rtk-setup, install-marker, price-docs, price-resolver)
 npm run typecheck
 ```
 

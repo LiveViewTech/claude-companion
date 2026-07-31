@@ -61,6 +61,13 @@ export interface CccConfig {
      * is opt-in per session even when enabled; this is the hard off switch on top of that.
      */
     enabled: boolean;
+    /**
+     * Allow arming on 1h-TTL (subscription) sessions. Off by default because a 1h cache
+     * rarely lapses between turns, so pinging it usually costs more than the cold re-writes
+     * it avoids. Flip this on to keep-warm 1h sessions anyway (the net-savings readout still
+     * tells you whether it's paying off).
+     */
+    allow1hArm: boolean;
     /** Soft cap on pings per idle period (user-overridable, never break-even-limited). */
     maxPingsPerIdle: number;
   };
@@ -125,6 +132,15 @@ export interface CccConfig {
       permission: string;
     };
   };
+  /** Dashboard-only view preferences. Nothing here changes what the daemon measures. */
+  dashboard: {
+    /**
+     * Session-card density. "advanced" is the full card; "simple" keeps only session cost,
+     * cost/turn and cold re-write, stacked above the cache ring. Lives in config.json (rather
+     * than the browser) so the Controls panel stays a single source of truth.
+     */
+    cardView: "simple" | "advanced";
+  };
 }
 
 export const DEFAULTS: CccConfig = {
@@ -135,7 +151,7 @@ export const DEFAULTS: CccConfig = {
   pricing: { autoResolve: true, refreshDays: 7 },
   accountUsage: { enabled: true, pollSeconds: 60 },
   guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
-  keepwarm: { enabled: true, maxPingsPerIdle: 12 },
+  keepwarm: { enabled: true, allow1hArm: false, maxPingsPerIdle: 12 },
   advisor: { enabled: true, nudgeEvery: 10 },
   naming: { enabled: true, model: "haiku" },
   turnSignal: {
@@ -150,6 +166,7 @@ export const DEFAULTS: CccConfig = {
     // "" means: let the hook pick a sensible per-platform default.
     sounds: { done: "", question: "", permission: "" },
   },
+  dashboard: { cardView: "advanced" },
 };
 
 export function configFile(): string {
@@ -173,6 +190,7 @@ export function loadConfig(): CccConfig {
         ...(raw.turnSignal ?? {}),
         sounds: { ...DEFAULTS.turnSignal.sounds, ...(raw.turnSignal?.sounds ?? {}) },
       },
+      dashboard: { ...DEFAULTS.dashboard, ...(raw.dashboard ?? {}) },
     };
   } catch {
     return { ...DEFAULTS };

@@ -35,11 +35,23 @@
   <section id="sessions" class="cards" aria-live="polite"></section>
 
   <section class="feed-wrap">
-    <h2>Controls <span class="soft">(saved to config.json; take effect immediately)</span></h2>
-    <div class="ctrl-grid">
+    <details class="collapsible" open>
+      <summary>Controls <span class="soft">(saved to config.json; take effect immediately)</span></summary>
+      <div class="ctrl-grid">
+      <label class="ctrl" title="Card density. Advanced is the full card. Simple keeps only session cost, cost/turn and cold re-write, stacked above the cache ring — everything else on the card is hidden.">
+        <span>Card view</span>
+        <select id="ctrl-cardview">
+          <option value="advanced">advanced</option>
+          <option value="simple">simple</option>
+        </select>
+      </label>
       <label class="ctrl" title="Master switch for cache keep-warm pings. When off, sessions can't be armed (the button above refuses). Keep-warm is opt-in per session even when this is on.">
         <input type="checkbox" id="ctrl-keepwarm" />
         <span>Keep-warm <span class="soft">— allow cache-keeping pings</span></span>
+      </label>
+      <label class="ctrl" title="Let keep-warm arm 1h-TTL (subscription) sessions too. Off by default: a 1h cache rarely lapses between turns, so pinging it usually costs more than it saves. The per-session 'net' readout tells you if it's paying off.">
+        <input type="checkbox" id="ctrl-allow1h" />
+        <span>Keep-warm on 1h <span class="soft">— arm 1h-TTL sessions</span></span>
       </label>
       <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the usage-limit guardian.">
         <input type="checkbox" id="ctrl-advisor" />
@@ -66,7 +78,8 @@
         <input type="checkbox" id="ctrl-flash" />
         <span>Turn flash <span class="soft">— dashboard flash on your turn</span></span>
       </label>
-    </div>
+      </div>
+    </details>
   </section>
 
   <section class="feed-wrap">
@@ -84,8 +97,10 @@
   </section>
 
   <section class="feed-wrap">
-    <h2>rtk <span class="soft">(Rust Token Killer — command-output compression)</span></h2>
-    <div id="rtk-gain" class="rtk-gain"></div>
+    <details class="collapsible" open>
+      <summary>rtk <span class="soft">(Rust Token Killer — command-output compression)</span></summary>
+      <div id="rtk-gain" class="rtk-gain"></div>
+    </details>
   </section>
 
   <section class="feed-wrap" id="windows-wrap" hidden>
@@ -97,8 +112,10 @@
   </section>
 
   <section class="feed-wrap">
-    <h2>Events</h2>
-    <ul id="feed" class="feed"></ul>
+    <details class="collapsible" open>
+      <summary>Events</summary>
+      <ul id="feed" class="feed"></ul>
+    </details>
   </section>
 </main>
 
@@ -131,7 +148,7 @@
         <div><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Cost / turn <span class="soft carry-model"></span> <span class="soft carry-hint"></span></dt><dd class="carry"><span class="carry-val">–</span><span class="prefix-sub" title="Context prefix — how big the conversation is now: tokens re-sent and re-read from cache every turn. Grows as the chat gets longer.">–</span></dd></div>
         <div class="carry-models-row"><dt title="The same per-turn carry cost if this session were running on other models (caches are priced per model).">…by model</dt><dd class="carry-models">–</dd></div>
         <div><dt title="What you'd pay to rebuild the whole cache from scratch if it expires before your next prompt — a full cache write at 1.25× (5-min) to 2× (1-hour) the input rate. Shown as a warning of what idling past the countdown costs.">Cold re-write</dt><dd class="rewrite">–</dd></div>
-        <div><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
+        <div class="switch-row"><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
         <div class="kw-row"><dt title="Send tiny pings to keep the cache alive so it doesn't go cold during idle gaps — only worthwhile on 5-minute-TTL sessions. 'net' shows pings' cost vs. the cold re-writes they avoided.">Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>
       </dl>
     </div>

@@ -85,10 +85,13 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 }
 .card.stale { opacity: 0.55; }
 .card-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+/* The text column must be allowed to shrink below its content width, otherwise a long
+   unbreakable directory path pushes the head-actions off the right edge of the card. */
+.card-head > div:first-child { min-width: 0; flex: 1; }
 .proj { font-weight: 650; word-break: break-word; }
 /* Named sessions carry the long description in title=; signal the hover like the stat labels do. */
 .proj.named[title]:not([title=""]) { cursor: help; text-decoration: underline dotted var(--grid); text-underline-offset: 3px; }
-.meta { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+.meta { color: var(--ink-2); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
 .head-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
 .open-btn {
   font: inherit; font-size: 11px; padding: 1px 8px; border-radius: 999px;
@@ -151,6 +154,18 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .carry-models-row { align-items: start; }
 .carry-hint { font-size: 11px; }
 
+/* Simple card view: session cost / cost-per-turn / cold re-write stacked under the card head,
+   with the cache ring centered below them. Everything else on the card is hidden. The card head
+   (name, tier badge, dismiss, open) is untouched — "simple" only trims what's below it. */
+.view-simple .card-body { flex-direction: column; align-items: stretch; gap: 12px; }
+.view-simple .stats { order: 1; }
+.view-simple .ring-wrap { order: 2; align-self: center; }
+.view-simple .carry-models-row,
+.view-simple .switch-row,
+.view-simple .kw-row,
+.view-simple .carry-hint,
+.view-simple .prefix-sub { display: none; }
+
 .feed-wrap h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 26px 0 8px; }
 .feed-wrap details.collapsible { margin: 26px 0 8px; }
 .feed-wrap details.collapsible summary {
@@ -165,6 +180,8 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .feed-wrap details.collapsible[open] summary::before { transform: rotate(90deg); }
 .feed-wrap details.collapsible summary:hover { color: var(--ink-2); }
 .feed-wrap details.collapsible > .table-wrap { margin-top: 8px; }
+/* Every collapsible's first content block clears its summary, whatever element it is. */
+.feed-wrap details.collapsible > summary + * { margin-top: 8px; }
 .feed { list-style: none; margin: 0; padding: 0; }
 .feed li {
   padding: 8px 12px;

@@ -110,6 +110,14 @@ describe("config HTTP endpoints", () => {
     expect(res.guardian.action).toBe("handoff"); // unchanged
   });
 
+  it("persists the dashboard card view and rejects an unknown one", async () => {
+    expect((await getConfig()).dashboard.cardView).toBe("advanced");
+    expect((await postConfig({ dashboard: { cardView: "simple" } })).dashboard.cardView).toBe("simple");
+    // A bogus view must not blank the setting — the dashboard reads this back on load.
+    expect((await postConfig({ dashboard: { cardView: "tiny" } })).dashboard.cardView).toBe("simple");
+    expect((await postConfig({ dashboard: { cardView: "advanced" } })).dashboard.cardView).toBe("advanced");
+  });
+
   it("ignores a non-positive nudgeEvery but accepts a valid one", async () => {
     const res1 = await postConfig({ advisor: { nudgeEvery: 0 } });
     expect(res1.advisor.nudgeEvery).toBe(DEFAULTS.advisor.nudgeEvery); // 0 rejected

@@ -77,6 +77,39 @@ export function classifyReason(input) {
   return "done";
 }
 
+// XDG sound themes, in preference order, and the event names each reason maps to. Unlike Windows
+// (C:\Windows\Media is always there) and macOS (/System/Library/Sounds is always there), a Linux
+// box may have any subset of these installed — a hard-coded path is how you end up with silence.
+const LINUX_THEMES = ["freedesktop", "Yaru", "gnome", "ubuntu", "oxygen"];
+const LINUX_EVENTS = {
+  done: ["complete", "bell", "service-login"],
+  question: ["message", "message-new-instant", "bell"],
+  permission: ["dialog-information", "dialog-warning", "bell"],
+};
+const LINUX_EXTS = [".oga", ".ogg", ".wav"];
+
+/** First readable file from the XDG sound themes for `reason`, or "" when none is installed. */
+export function linuxThemeSound(reason, exists = (f) => fs.existsSync(f)) {
+  const roots = [
+    path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "sounds"),
+    "/usr/local/share/sounds",
+    "/usr/share/sounds",
+  ];
+  for (const event of LINUX_EVENTS[reason] ?? LINUX_EVENTS.done) {
+    for (const root of roots) {
+      for (const theme of LINUX_THEMES) {
+        for (const dir of [path.join(root, theme, "stereo"), path.join(root, theme)]) {
+          for (const ext of LINUX_EXTS) {
+            const f = path.join(dir, event + ext);
+            if (exists(f)) return f;
+          }
+        }
+      }
+    }
+  }
+  return "";
+}
+
 export function defaultSound(reason) {
   if (process.platform === "win32") {
     const media = path.join(process.env.SystemRoot ?? "C:\\Windows", "Media");
@@ -86,8 +119,8 @@ export function defaultSound(reason) {
     const s = "/System/Library/Sounds";
     return path.join(s, reason === "done" ? "Glass.aiff" : reason === "question" ? "Ping.aiff" : "Funk.aiff");
   }
-  const s = "/usr/share/sounds/freedesktop/stereo";
-  return path.join(s, reason === "done" ? "complete.oga" : reason === "question" ? "message.oga" : "dialog-information.oga");
+  // No sound theme installed => synthesize one, so Linux is never silent.
+  return linuxThemeSound(reason) || chimeFile(reason);
 }
 
 // Parse a RIFF/WAVE file: locate the fmt fields and the data chunk. Returns null if it's not a
@@ -131,10 +164,14 @@ export function withLeadingSilence(srcBuf, leadMs) {
   const { fmt } = p;
   const silBytes = Math.max(0, Math.round((fmt.byteRate * leadMs) / 1000 / fmt.blockAlign) * fmt.blockAlign);
   const orig = srcBuf.subarray(p.dataOff, p.dataOff + p.dataLen);
-  const newDataLen = silBytes + orig.length;
-  const out = Buffer.alloc(44 + newDataLen);
+  return wavFromPcm(Buffer.concat([Buffer.alloc(silBytes), orig]), fmt);
+}
+
+/** Wrap raw PCM samples in a canonical 44-byte RIFF/WAVE header. */
+function wavFromPcm(pcm, fmt) {
+  const out = Buffer.alloc(44 + pcm.length);
   out.write("RIFF", 0, "ascii");
-  out.writeUInt32LE(36 + newDataLen, 4);
+  out.writeUInt32LE(36 + pcm.length, 4);
   out.write("WAVE", 8, "ascii");
   out.write("fmt ", 12, "ascii");
   out.writeUInt32LE(16, 16);
@@ -145,9 +182,100 @@ export function withLeadingSilence(srcBuf, leadMs) {
   out.writeUInt16LE(fmt.blockAlign, 32);
   out.writeUInt16LE(fmt.bits, 34);
   out.write("data", 36, "ascii");
-  out.writeUInt32LE(newDataLen, 40);
-  orig.copy(out, 44 + silBytes); // leading silBytes are already zero
+  out.writeUInt32LE(pcm.length, 40);
+  pcm.copy(out, 44);
   return out;
+}
+
+// A short bell-ish arpeggio per reason, so a Linux box with no XDG sound theme still gets a
+// pleasant cue instead of nothing (or, before this, aplay's raw-PCM static). Notes are
+// {startMs, freq, ms}; each is a sine plus a quieter octave with a 6ms attack and an
+// exponential decay — enough overtone to read as a chime rather than a test tone.
+const CHIMES = {
+  done: [{ startMs: 0, freq: 587.33, ms: 260 }, { startMs: 110, freq: 880.0, ms: 300 }, { startMs: 220, freq: 1174.66, ms: 460 }],
+  question: [{ startMs: 0, freq: 987.77, ms: 220 }, { startMs: 150, freq: 987.77, ms: 300 }],
+  permission: [{ startMs: 0, freq: 880.0, ms: 240 }, { startMs: 130, freq: 587.33, ms: 420 }],
+};
+
+/** Render `notes` to a 16-bit mono 44.1kHz WAV buffer. */
+export function renderChime(notes, sampleRate = 44100) {
+  const totalMs = notes.reduce((m, n) => Math.max(m, n.startMs + n.ms), 0) + 40;
+  const frames = Math.ceil((sampleRate * totalMs) / 1000);
+  const buf = new Float64Array(frames);
+  for (const n of notes) {
+    const start = Math.round((sampleRate * n.startMs) / 1000);
+    const len = Math.round((sampleRate * n.ms) / 1000);
+    const attack = Math.max(1, Math.round(sampleRate * 0.006));
+    for (let i = 0; i < len && start + i < frames; i++) {
+      const t = i / sampleRate;
+      const env = Math.min(1, i / attack) * Math.exp(-3.5 * (i / len));
+      buf[start + i] += env * (Math.sin(2 * Math.PI * n.freq * t) + 0.28 * Math.sin(4 * Math.PI * n.freq * t));
+    }
+  }
+  let peak = 0;
+  for (const v of buf) peak = Math.max(peak, Math.abs(v));
+  const scale = peak > 0 ? 0.6 / peak : 0; // headroom; overlapping notes sum well past 1.0
+  const pcm = Buffer.alloc(frames * 2);
+  for (let i = 0; i < frames; i++) pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, buf[i] * scale)) * 32767), i * 2);
+  return wavFromPcm(pcm, { channels: 1, sampleRate, byteRate: sampleRate * 2, blockAlign: 2, bits: 16 });
+}
+
+/** Path to the generated chime for `reason`, written once into the state dir. */
+function chimeFile(reason) {
+  const dir = path.join(baseDir("state"), "sound");
+  const f = path.join(dir, `ccc-${reason}.wav`);
+  try {
+    if (!fs.existsSync(f)) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(f, renderChime(CHIMES[reason] ?? CHIMES.done));
+    }
+    return f;
+  } catch {
+    return ""; // a sound must never fail the hook
+  }
+}
+
+/** True when `bin` is an executable on PATH. */
+function onPath(bin) {
+  const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE").split(path.delimiter) : [""];
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      try {
+        fs.accessSync(path.join(dir, bin + ext), fs.constants.X_OK);
+        return true;
+      } catch { /* keep looking */ }
+    }
+  }
+  return false;
+}
+
+// Linux players in preference order. `exts` marks a player with NO decoder: it must never be
+// handed a compressed file. That is the "several seconds of static" bug — `aplay` given an .oga
+// doesn't error, it falls back to RAW playback and renders the Vorbis bytes as 8-bit samples.
+// The old chain (`paplay || aplay`) hit exactly that on PipeWire boxes, where paplay
+// (a pulseaudio-utils binary) often isn't installed at all.
+const LINUX_PLAYERS = [
+  { bin: "pw-play", args: (f) => [f] }, // PipeWire; libsndfile, decodes oga/ogg/flac/wav
+  { bin: "paplay", args: (f) => [f] }, // PulseAudio; same decoders
+  { bin: "canberra-gtk-play", args: (f) => ["-f", f] }, // libcanberra, the XDG sound-theme player
+  { bin: "ffplay", args: (f) => ["-nodisp", "-autoexit", "-loglevel", "quiet", f] },
+  { bin: "mpv", args: (f) => ["--no-video", "--really-quiet", f] },
+  { bin: "ogg123", args: (f) => ["-q", f], exts: [".oga", ".ogg"] },
+  { bin: "play", args: (f) => ["-q", f] }, // sox
+  { bin: "aplay", args: (f) => ["-q", f], exts: [".wav", ".au"] }, // NO decoder: WAV/AU only
+  { bin: "cvlc", args: (f) => ["--intf", "dummy", "--play-and-exit", "--quiet", f] },
+];
+
+/** {cmd,args} for the first installed Linux player that can actually decode `file`, else null. */
+export function linuxPlayer(file, has = onPath) {
+  const ext = path.extname(file).toLowerCase();
+  for (const p of LINUX_PLAYERS) {
+    if (p.exts && !p.exts.includes(ext)) continue;
+    if (!has(p.bin)) continue;
+    return { cmd: p.bin, args: p.args(file) };
+  }
+  return null;
 }
 
 // Cached path to `srcPath` with `leadMs` of silence prepended (built once). Falls back to the
@@ -172,8 +300,9 @@ function paddedWav(srcPath, leadMs) {
 // Resolves once the sound has played (or the safety timeout fires). We deliberately do NOT
 // detach: the hook must stay alive until the player finishes, or Claude Code's job object
 // tears the player down before it makes a sound. On Windows a short silence is played first so
-// device spin-up doesn't clip the start. Never rejects — a sound must not fail a hook.
-function playSound(wav, leadMs = 0) {
+// device spin-up doesn't clip the start; on Linux the player is chosen by what can decode the
+// file. Never rejects — a sound must not fail a hook.
+function playSound(wav, leadMs = 0, reason = "done") {
   return new Promise((resolve) => {
     if (!wav) return resolve();
     try {
@@ -191,8 +320,15 @@ function playSound(wav, leadMs = 0) {
       cmd = "afplay";
       args = [wav];
     } else {
-      cmd = "sh";
-      args = ["-c", 'paplay "$0" 2>/dev/null || aplay -q "$0" 2>/dev/null', wav];
+      // Pick a player that can decode this file. If only WAV-only players are installed, swap in
+      // our generated chime rather than feeding a compressed file to aplay (raw-PCM static).
+      let player = linuxPlayer(wav);
+      if (!player) {
+        const fallback = chimeFile(reason);
+        player = fallback ? linuxPlayer(fallback) : null;
+      }
+      if (!player) return resolve(); // no audio player at all
+      ({ cmd, args } = player);
     }
     let settled = false;
     const done = () => {
@@ -264,7 +400,11 @@ async function main() {
   // otherwise kill a detached player mid-note.
   const flash = post(readPort(), "/turn", { session_id: input.session_id ?? "", reason });
   if (cfg.sound !== false) {
-    await playSound((cfg.sounds && cfg.sounds[reason]) || defaultSound(reason), cfg.soundLeadMs ?? 0);
+    // A configured path that no longer exists falls back to the platform default rather than
+    // going silent (system sound themes get uninstalled; hand-edited config paths go stale).
+    const configured = (cfg.sounds && cfg.sounds[reason]) || "";
+    const file = configured && fs.existsSync(configured) ? configured : defaultSound(reason);
+    await playSound(file, cfg.soundLeadMs ?? 0, reason);
   }
   await flash;
   process.exit(0);

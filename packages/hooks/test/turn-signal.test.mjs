@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
-import { classifyReason, defaultSound, parseWav, withLeadingSilence } from "../src/turn-signal.mjs";
+import { classifyReason, defaultSound, linuxPlayer, linuxThemeSound, parseWav, renderChime, withLeadingSilence } from "../src/turn-signal.mjs";
 
 /** Minimal valid PCM WAV with `dataBytes` of caller-supplied sample data. */
 function makeWav(dataBytes, { channels = 2, sampleRate = 44100, bits = 16 } = {}) {
@@ -87,5 +87,53 @@ describe("turn-signal hook", () => {
     const adpcm = makeWav(Buffer.alloc(16, 1));
     adpcm.writeUInt16LE(2, 20); // audioFormat 2 = ADPCM, not PCM
     expect(withLeadingSilence(adpcm, 500)).toBeNull();
+  });
+});
+
+describe("linux player selection", () => {
+  const has = (...bins) => (b) => bins.includes(b);
+
+  // The bug this guards: aplay has no Ogg decoder and silently falls back to RAW playback,
+  // so `aplay complete.oga` renders compressed bytes as samples -> seconds of static.
+  it("never hands a compressed file to a WAV-only player", () => {
+    expect(linuxPlayer("/usr/share/sounds/freedesktop/stereo/complete.oga", has("aplay"))).toBeNull();
+    expect(linuxPlayer("/tmp/ccc-done.wav", has("aplay"))).toEqual({ cmd: "aplay", args: ["-q", "/tmp/ccc-done.wav"] });
+  });
+
+  it("picks pw-play on a PipeWire box with no pulseaudio-utils", () => {
+    const p = linuxPlayer("/s/complete.oga", has("pw-play", "aplay"));
+    expect(p).toEqual({ cmd: "pw-play", args: ["/s/complete.oga"] });
+  });
+
+  it("prefers paplay over later decoders, and falls through to ones that are installed", () => {
+    expect(linuxPlayer("/s/a.oga", has("paplay", "mpv")).cmd).toBe("paplay");
+    expect(linuxPlayer("/s/a.oga", has("mpv", "cvlc")).cmd).toBe("mpv");
+    expect(linuxPlayer("/s/a.oga", has("cvlc")).cmd).toBe("cvlc");
+  });
+
+  it("returns null when nothing is installed", () => {
+    expect(linuxPlayer("/s/a.wav", () => false)).toBeNull();
+  });
+});
+
+describe("linux sound fallbacks", () => {
+  it("walks themes and extensions, preferring the first reason-appropriate event", () => {
+    const present = new Set(["/usr/share/sounds/Yaru/stereo/complete.oga"]);
+    expect(linuxThemeSound("done", (f) => present.has(f))).toBe("/usr/share/sounds/Yaru/stereo/complete.oga");
+    expect(linuxThemeSound("question", (f) => present.has(f))).toBe("");
+  });
+
+  it("synthesizes a playable PCM WAV when no sound theme is installed", () => {
+    const buf = renderChime([{ startMs: 0, freq: 880, ms: 200 }, { startMs: 100, freq: 1320, ms: 300 }]);
+    const p = parseWav(buf);
+    expect(p.fmt).toMatchObject({ audioFormat: 1, channels: 1, sampleRate: 44100, bits: 16 });
+    // ~440ms of audio (last note end + 40ms tail), and it is not silence.
+    expect(p.dataLen / (44100 * 2)).toBeCloseTo(0.44, 1);
+    expect(buf.subarray(p.dataOff, p.dataOff + p.dataLen).some((b) => b !== 0)).toBe(true);
+    // Peak stays inside the headroom the renderer promises.
+    let peak = 0;
+    for (let i = p.dataOff; i + 1 < p.dataOff + p.dataLen; i += 2) peak = Math.max(peak, Math.abs(buf.readInt16LE(i)));
+    expect(peak).toBeLessThanOrEqual(Math.round(0.6 * 32767) + 1);
+    expect(peak).toBeGreaterThan(1000);
   });
 });
