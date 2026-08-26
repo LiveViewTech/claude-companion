@@ -8,6 +8,25 @@ import type { Store } from "./store.ts";
 import { classStats, computeExactAttribution, toolLeaderboard } from "./attribution.ts";
 import { rtkGain } from "./rtk-gain.ts";
 import { coldRewriteSummary, projectHabits } from "./habits.ts";
+import { awayCoverageMs } from "./awake-tracker.ts";
+
+/**
+ * What the "today" meter figure is measured from. "midnight" is the real thing; the
+ * other two mean the baseline predates local midnight, either because the machine was
+ * asleep (expected on a laptop that spends the night in a backpack) or because polling
+ * broke while the machine was up (a bug worth surfacing).
+ */
+export type DayBaselineKind = "midnight" | "pre-away" | "stale";
+
+export interface DayBaseline {
+  /** When the baseline reading was last confirmed. */
+  at: number;
+  kind: DayBaselineKind;
+  /** Minutes of the pre-midnight gap the machine was demonstrably away for. */
+  awayMinutes: number | null;
+  /** "suspend" | "machine-off" | "daemon-down", from the longest away window. */
+  awayReason: string | null;
+}
 
 /** Case/separator-insensitive path equality (Windows transcripts mix `\` and `/`). */
 function normPath(p: string): string {
@@ -36,6 +55,12 @@ export class Server {
   private port: number;
   /** Monthly spend cap (USD) for the dashboard "this month" tile; null = no cap. Set by index.ts. */
   monthlyBudgetUsd: number | null = null;
+  /**
+   * How old the account meter may get before its readings stop being usable. Set by
+   * index.ts from the poll interval. Past this, "today" is withheld rather than
+   * reported as the difference between two copies of the same stale number.
+   */
+  meterStaleMs = 20 * 60_000;
   /** Live account usage from Anthropic's OAuth endpoint; null when the poller is disabled. Set by index.ts. */
   accountUsage: (() => unknown) | null = null;
   /**
@@ -46,6 +71,8 @@ export class Server {
   pricingStatus: (() => unknown) | null = null;
   /** Parsed status + raw endpoint response, for /api/account drift debugging. Set by index.ts. */
   accountRaw: (() => unknown) | null = null;
+  /** Cost-audit report over a lookback window; null when auditing is off. Set by index.ts. */
+  auditReport: ((sinceMs: number) => unknown) | null = null;
   /** Sessions whose cwd is this directory are hidden from the dashboard (the namer's own `claude -p` runs). */
   hideSessionsUnder: string | null = null;
   /** Dashboard flash config for the "it's your turn" signal; null = flashing off. Set by index.ts. */
@@ -53,6 +80,12 @@ export class Server {
   /** Per-session debounce for /turn so a burst of Stop/Notification hooks flashes once. */
   private lastTurnAt = new Map<string, number>();
   private static TURN_DEBOUNCE_MS = 1200;
+  /**
+   * How much of a pre-midnight polling gap may go unexplained by away windows before the
+   * baseline is called stale rather than expected. Covers the minutes between the last
+   * poll and the actual suspend, plus the heartbeat's own resolution.
+   */
+  private static AWAY_TOLERANCE_MS = 10 * 60_000;
   /** Feature endpoints plugged in by index.ts (advisor M3, keep-warm M5). */
   handlers: {
     advise?: (body: Record<string, unknown>) => unknown;
@@ -109,6 +142,12 @@ export class Server {
       if (p === "/healthz") return void this.json(res, { ok: true, pid: process.pid });
       if (p === "/api/sessions") return void this.json(res, this.sessionsPayload());
       if (p === "/api/day") return void this.json(res, this.dayPayload());
+      if (p === "/api/audit") {
+        if (!this.auditReport) return void this.json(res, { error: "audit disabled" }, 404);
+        // Default 14d: long enough to accumulate windows, short enough to reflect current rates.
+        const days = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 14));
+        return void this.json(res, this.auditReport(Date.now() - days * 86_400_000));
+      }
       if (p === "/api/tools") {
         computeExactAttribution(this.store);
         return void this.json(res, { leaderboard: toolLeaderboard(this.store), classes: classStats(this.store) });
@@ -203,7 +242,8 @@ export class Server {
   private dayPayload(): {
     dayCostUsd: number;
     dayMeterUsd: number | null;
-    dayMidnightGap: { gapMinutes: number; sinceMs: number } | null;
+    dayBaseline: DayBaseline | null;
+    meterStale: { fetchedAt: number; ageMinutes: number } | null;
     from: number;
     to: number;
     monthCostUsd: number;
@@ -218,13 +258,12 @@ export class Server {
     // SUM(cost_usd) over a ts range, so it serves the month window too. This is the
     // local this-device estimate; `account` carries the claude.ai meter when available.
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    // If meter polling was down across midnight the baseline is stale — suppress the
-    // (now wrong) meter delta and let the dashboard warn instead.
-    const dayMidnightGap = this.dayMidnightGap(start);
+    const meter = this.dayMeter(start);
     return {
       dayCostUsd: this.store.dayCostUsd(start, end),
-      dayMeterUsd: dayMidnightGap ? null : this.dayMeterUsd(start),
-      dayMidnightGap,
+      dayMeterUsd: meter.usd,
+      dayBaseline: meter.baseline,
+      meterStale: this.meterStale(),
       from: start,
       to: end,
       monthCostUsd: this.store.dayCostUsd(monthStart, now.getTime() + 1),
@@ -234,33 +273,67 @@ export class Server {
     };
   }
 
-  /**
-   * Non-null when account-meter polling was down across local midnight (a poll gap
-   * straddling `dayStartMs`): the last sample at/before midnight then predates true
-   * midnight by the downtime, so `dayMeterUsd` would count pre-midnight movement
-   * into "today". The dashboard shows a warning in place of the number. An ordinary
-   * mid-day daemon restart makes a gap that does NOT straddle midnight, so it does
-   * not trip this.
-   */
-  private dayMidnightGap(dayStartMs: number): { gapMinutes: number; sinceMs: number } | null {
-    const gap = this.store.pollGapCovering(dayStartMs);
-    if (!gap) return null;
-    return { gapMinutes: Math.round(gap.gapMs / 60_000), sinceMs: gap.start };
+  /** Latest account-meter reading and when it was taken; null when there is none. */
+  private meterUsage(): { usedUsd: number; fetchedAt: number } | null {
+    const status = this.accountUsage?.() as { usage?: { usedUsd?: unknown; fetchedAt?: unknown } } | null | undefined;
+    const u = status?.usage;
+    if (!u || typeof u.usedUsd !== "number" || !Number.isFinite(u.usedUsd)) return null;
+    // An undated reading can't be aged, and any stand-in date would surface as a bogus
+    // staleness banner, so it counts as no reading rather than an infinitely old one.
+    if (typeof u.fetchedAt !== "number" || !Number.isFinite(u.fetchedAt)) return null;
+    return { usedUsd: u.usedUsd, fetchedAt: u.fetchedAt };
+  }
+
+  /** Non-null when the meter's newest reading is older than meterStaleMs. */
+  private meterStale(): { fetchedAt: number; ageMinutes: number } | null {
+    const current = this.meterUsage();
+    if (!current) return null;
+    const age = Date.now() - current.fetchedAt;
+    return age > this.meterStaleMs ? { fetchedAt: current.fetchedAt, ageMinutes: Math.round(age / 60_000) } : null;
   }
 
   /**
-   * Account-true "today": current claude.ai meter minus its reading at local midnight
-   * (all surfaces, matching the website's arithmetic — the local dayCostUsd estimate
-   * consistently reads ~12-16% low against it). Null until meter samples span midnight,
-   * or when the meter reset mid-day (billing-cycle rollover).
+   * Account-true "today": current claude.ai meter minus its baseline reading (all
+   * surfaces, matching the website's arithmetic — the local dayCostUsd estimate reads
+   * ~12-16% low against it). Null when there is no reading, when the newest one is too
+   * old to describe "now" (a stale meter on both ends of the subtraction yields a
+   * confident $0.00, which is worse than no number), or when the meter went backwards
+   * mid-day (billing-cycle rollover).
    */
-  private dayMeterUsd(dayStartMs: number): number | null {
-    const status = this.accountUsage?.() as { usage?: { usedUsd?: number } } | null | undefined;
-    const current = status?.usage?.usedUsd;
-    if (typeof current !== "number") return null;
-    const baseline = this.store.meterUsdAt(dayStartMs);
-    if (baseline == null || current < baseline) return null;
-    return current - baseline;
+  private dayMeter(dayStartMs: number): { usd: number | null; baseline: DayBaseline | null } {
+    const current = this.meterUsage();
+    if (!current || Date.now() - current.fetchedAt > this.meterStaleMs) return { usd: null, baseline: null };
+    const baselineUsd = this.store.meterUsdAt(dayStartMs);
+    if (baselineUsd == null || current.usedUsd < baselineUsd) return { usd: null, baseline: null };
+    return { usd: current.usedUsd - baselineUsd, baseline: this.dayBaseline(dayStartMs) };
+  }
+
+  /**
+   * Where the day's baseline reading actually comes from. No polling gap across local
+   * midnight means the baseline is a true midnight figure — the sample itself may be
+   * older, but a deduped meter only skips a sample when nothing moved, so the value
+   * still held at midnight.
+   *
+   * A gap makes the baseline older than midnight, and the away windows say whether that
+   * was expected. A suspended or powered-off machine explains it, and the pre-sleep
+   * reading is then the best baseline there is (spend from another device during the
+   * sleep lands in today's figure — the label says so). An unexplained gap means the
+   * machine was up and polling broke, so the same number gets flagged instead.
+   */
+  private dayBaseline(dayStartMs: number): DayBaseline {
+    const gap = this.store.pollGapCovering(dayStartMs);
+    if (!gap) return { at: dayStartMs, kind: "midnight", awayMinutes: null, awayReason: null };
+    const away = this.store.awayWindowsSince(gap.start);
+    const covered = awayCoverageMs(away, gap.start, gap.end);
+    const longest = away
+      .filter((w) => w.end > gap.start && w.start < gap.end)
+      .sort((a, b) => b.ms - a.ms)[0];
+    return {
+      at: gap.start,
+      kind: gap.gapMs - covered <= Server.AWAY_TOLERANCE_MS ? "pre-away" : "stale",
+      awayMinutes: covered > 0 ? Math.round(covered / 60_000) : null,
+      awayReason: longest?.reason ?? null,
+    };
   }
 
   /**

@@ -13,7 +13,31 @@ export class Store {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
+    // The CLI and the daemon both write; without this a writer that finds the lock held
+    // fails immediately instead of waiting the moment out.
+    this.db.exec("PRAGMA busy_timeout = 5000;");
     this.migrate();
+  }
+
+  /**
+   * Run `fn` as a single atomic write. BEGIN IMMEDIATE claims the write lock up front, so
+   * another process's writes land wholly before or wholly after — never interleaved into
+   * a multi-statement sequence that reads its own earlier writes.
+   */
+  transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Already unwound by SQLite.
+      }
+      throw err;
+    }
   }
 
   private migrate(): void {
@@ -29,6 +53,24 @@ export class Store {
         billing_tier_last TEXT,
         rtk_detected INTEGER DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS audit_windows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_ts INTEGER NOT NULL,
+        end_ts INTEGER NOT NULL,
+        meter_delta_usd REAL NOT NULL,
+        local_cost_usd REAL NOT NULL,
+        turns INTEGER NOT NULL DEFAULT 0,
+        sessions INTEGER NOT NULL DEFAULT 0,
+        models TEXT,
+        sole_model TEXT,
+        sole_session TEXT,
+        input_tok INTEGER NOT NULL DEFAULT 0,
+        output_tok INTEGER NOT NULL DEFAULT 0,
+        cache_read_tok INTEGER NOT NULL DEFAULT 0,
+        cache_w5_tok INTEGER NOT NULL DEFAULT 0,
+        cache_w1h_tok INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_windows_end ON audit_windows(end_ts);
       CREATE TABLE IF NOT EXISTS turns (
         uuid TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -300,6 +342,240 @@ export class Store {
       }
     }
     return null;
+  }
+
+  /**
+   * Record a stretch where nobody was watching the meter because the machine was
+   * asleep or off (see AwakeTracker). Stored at `ts = end` so a plain `ts >= x`
+   * scan finds every window that could still matter.
+   */
+  recordAwayWindow(w: { start: number; end: number; ms: number; reason: string }): void {
+    this.db
+      .prepare(`INSERT INTO events (ts, kind, session_id, payload) VALUES (?, 'away_window', NULL, ?)`)
+      .run(w.end, JSON.stringify(w));
+  }
+
+  /** Away windows that ended at or after `sinceMs`, oldest first. */
+  awayWindowsSince(sinceMs: number): Array<{ start: number; end: number; ms: number; reason: string }> {
+    const rows = this.db
+      .prepare(`SELECT payload FROM events WHERE kind = 'away_window' AND ts >= ? ORDER BY ts ASC`)
+      .all(sinceMs) as Array<{ payload: string }>;
+    const out: Array<{ start: number; end: number; ms: number; reason: string }> = [];
+    for (const r of rows) {
+      try {
+        const w = JSON.parse(r.payload) as Record<string, unknown>;
+        if (typeof w["start"] !== "number" || typeof w["end"] !== "number") continue;
+        out.push({
+          start: w["start"],
+          end: w["end"],
+          ms: typeof w["ms"] === "number" ? w["ms"] : w["end"] - w["start"],
+          reason: typeof w["reason"] === "string" ? w["reason"] : "unknown",
+        });
+      } catch {
+        // skip malformed row
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Aggregate of every turn in (startMs, endMs] — the local side of an audit window.
+   * Includes the session namer's own `claude -p` runs: hidden from the dashboard, but
+   * they cost money, so omitting them would bias the ratio low.
+   */
+  turnStatsInRange(
+    startMs: number,
+    endMs: number,
+  ): {
+    turns: number;
+    sessions: number;
+    costUsd: number;
+    inputTok: number;
+    outputTok: number;
+    cacheReadTok: number;
+    cacheW5Tok: number;
+    cacheW1hTok: number;
+    models: Record<string, { costUsd: number; turns: number }>;
+    topSession: { sessionId: string; costUsd: number } | null;
+  } {
+    const agg = this.db
+      .prepare(
+        `SELECT COUNT(*) AS turns, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(cost_usd), 0) AS cost,
+                COALESCE(SUM(input_tok), 0) AS input_tok, COALESCE(SUM(output_tok), 0) AS output_tok,
+                COALESCE(SUM(cache_read_tok), 0) AS cache_read_tok,
+                COALESCE(SUM(cache_w5_tok), 0) AS cache_w5_tok, COALESCE(SUM(cache_w1h_tok), 0) AS cache_w1h_tok
+         FROM turns WHERE ts > ? AND ts <= ?`,
+      )
+      .get(startMs, endMs) as Record<string, number>;
+    const models: Record<string, { costUsd: number; turns: number }> = {};
+    const rows = this.db
+      .prepare(
+        `SELECT COALESCE(model, 'unknown') AS m, SUM(cost_usd) AS c, COUNT(*) AS n
+         FROM turns WHERE ts > ? AND ts <= ? GROUP BY m`,
+      )
+      .all(startMs, endMs) as Array<{ m: string; c: number; n: number }>;
+    for (const r of rows) models[r.m] = { costUsd: r.c, turns: r.n };
+    const top = this.db
+      .prepare(
+        `SELECT session_id AS s, SUM(cost_usd) AS c FROM turns WHERE ts > ? AND ts <= ?
+         GROUP BY session_id ORDER BY c DESC LIMIT 1`,
+      )
+      .get(startMs, endMs) as { s: string; c: number } | undefined;
+    return {
+      turns: agg["turns"] ?? 0,
+      sessions: agg["sessions"] ?? 0,
+      costUsd: agg["cost"] ?? 0,
+      inputTok: agg["input_tok"] ?? 0,
+      outputTok: agg["output_tok"] ?? 0,
+      cacheReadTok: agg["cache_read_tok"] ?? 0,
+      cacheW5Tok: agg["cache_w5_tok"] ?? 0,
+      cacheW1hTok: agg["cache_w1h_tok"] ?? 0,
+      models,
+      topSession: top ? { sessionId: top.s, costUsd: top.c } : null,
+    };
+  }
+
+  /** Timestamp of the newest turn at or before `atOrBeforeMs` (default: any), else null. */
+  latestTurnTs(atOrBeforeMs = Number.MAX_SAFE_INTEGER): number | null {
+    const row = this.db.prepare(`SELECT MAX(ts) AS t FROM turns WHERE ts <= ?`).get(atOrBeforeMs) as {
+      t: number | null;
+    };
+    return row.t ?? null;
+  }
+
+  /**
+   * Total upward movement of the account meter across (startMs, endMs], summed over
+   * consecutive samples so a billing-cycle rollover (the meter dropping to near zero)
+   * doesn't read as negative spend. Used to say how much of a period the audit's
+   * quiet-bounded windows actually cover.
+   */
+  meterMovementUsd(startMs: number, endMs: number): number {
+    const rows = this.db
+      .prepare(
+        `SELECT payload FROM events WHERE kind = 'account_meter_sample' AND ts > ? AND ts <= ? ORDER BY ts ASC`,
+      )
+      .all(startMs, endMs) as Array<{ payload: string }>;
+    let prev = this.meterUsdAt(startMs);
+    let total = 0;
+    for (const r of rows) {
+      let usd: number | null = null;
+      try {
+        const v = (JSON.parse(r.payload) as { usedUsd?: unknown }).usedUsd;
+        usd = typeof v === "number" && Number.isFinite(v) ? v : null;
+      } catch {
+        usd = null;
+      }
+      if (usd == null) continue;
+      if (prev != null && usd > prev) total += usd - prev;
+      prev = usd;
+    }
+    return total;
+  }
+
+  insertAuditWindow(w: {
+    startTs: number;
+    endTs: number;
+    meterDeltaUsd: number;
+    localCostUsd: number;
+    turns: number;
+    sessions: number;
+    models: Record<string, { costUsd: number; turns: number }>;
+    soleModel: string | null;
+    soleSession: string | null;
+    inputTok: number;
+    outputTok: number;
+    cacheReadTok: number;
+    cacheW5Tok: number;
+    cacheW1hTok: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO audit_windows
+         (start_ts, end_ts, meter_delta_usd, local_cost_usd, turns, sessions, models, sole_model, sole_session,
+          input_tok, output_tok, cache_read_tok, cache_w5_tok, cache_w1h_tok)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        w.startTs,
+        w.endTs,
+        w.meterDeltaUsd,
+        w.localCostUsd,
+        w.turns,
+        w.sessions,
+        JSON.stringify(w.models),
+        w.soleModel,
+        w.soleSession,
+        w.inputTok,
+        w.outputTok,
+        w.cacheReadTok,
+        w.cacheW5Tok,
+        w.cacheW1hTok,
+      );
+  }
+
+  /** Closed audit windows ending in (sinceMs, untilMs], oldest first. */
+  auditWindows(
+    sinceMs: number,
+    untilMs: number,
+  ): Array<{
+    id: number;
+    startTs: number;
+    endTs: number;
+    meterDeltaUsd: number;
+    localCostUsd: number;
+    turns: number;
+    sessions: number;
+    models: Record<string, { costUsd: number; turns: number }>;
+    soleModel: string | null;
+    soleSession: string | null;
+    inputTok: number;
+    outputTok: number;
+    cacheReadTok: number;
+    cacheW5Tok: number;
+    cacheW1hTok: number;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM audit_windows WHERE end_ts > ? AND end_ts <= ? ORDER BY end_ts ASC`)
+      .all(sinceMs, untilMs) as Array<Record<string, unknown>>;
+    return rows.map((r) => {
+      let models: Record<string, { costUsd: number; turns: number }> = {};
+      try {
+        models = JSON.parse(String(r["models"] ?? "{}")) as Record<string, { costUsd: number; turns: number }>;
+      } catch {
+        models = {};
+      }
+      return {
+        id: Number(r["id"]),
+        startTs: Number(r["start_ts"]),
+        endTs: Number(r["end_ts"]),
+        meterDeltaUsd: Number(r["meter_delta_usd"]),
+        localCostUsd: Number(r["local_cost_usd"]),
+        turns: Number(r["turns"]),
+        sessions: Number(r["sessions"]),
+        models,
+        soleModel: r["sole_model"] == null ? null : String(r["sole_model"]),
+        soleSession: r["sole_session"] == null ? null : String(r["sole_session"]),
+        inputTok: Number(r["input_tok"]),
+        outputTok: Number(r["output_tok"]),
+        cacheReadTok: Number(r["cache_read_tok"]),
+        cacheW5Tok: Number(r["cache_w5_tok"]),
+        cacheW1hTok: Number(r["cache_w1h_tok"]),
+      };
+    });
+  }
+
+  /** Turn timestamps in (startMs, endMs], oldest first — the quiet-gap timeline. */
+  turnTimestamps(startMs: number, endMs: number): number[] {
+    return (
+      this.db.prepare(`SELECT ts FROM turns WHERE ts > ? AND ts <= ? ORDER BY ts ASC`).all(startMs, endMs) as Array<{
+        ts: number;
+      }>
+    ).map((r) => r.ts);
+  }
+
+  /** Drop audit windows ending after `sinceMs`, so a backfill can rebuild them idempotently. */
+  deleteAuditWindowsSince(sinceMs: number): number {
+    return Number(this.db.prepare(`DELETE FROM audit_windows WHERE end_ts > ?`).run(sinceMs).changes);
   }
 
   /** Usage-window observations (samples + resets) since `sinceMs`, oldest first. */

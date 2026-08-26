@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -123,5 +123,43 @@ describe("AccountUsagePoller", () => {
     // Backoff window: the next poll is skipped without a request.
     await p.pollOnce();
     expect(calls).toBe(2);
+  });
+
+  it("clamps a Retry-After that would otherwise take the meter dark for hours", async () => {
+    // The 2026-08-25 failure: a 429 asked for a day of silence, the poller obliged, and
+    // the month tile sat frozen for 19h while "today" reported $0.00.
+    let calls = 0;
+    const logs: string[] = [];
+    const p = new AccountUsagePoller({
+      pollMs: 60_000,
+      credentialsFile: credsFile,
+      log: (m) => logs.push(m),
+      fetchFn: (() => {
+        calls++;
+        return Promise.resolve(
+          calls === 1
+            ? new Response("", { status: 429, headers: { "Retry-After": "86400" } })
+            : new Response(JSON.stringify(SAMPLE), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    vi.useFakeTimers();
+    try {
+      const t0 = new Date("2026-08-25T22:00:00Z");
+      vi.setSystemTime(t0);
+      expect((await p.pollOnce()).error).toBe("rate-limited");
+      expect(logs.join(" ")).toContain("clamped to 900s");
+
+      vi.setSystemTime(new Date(t0.getTime() + 10 * 60_000)); // inside the ceiling
+      await p.pollOnce();
+      expect(calls).toBe(1);
+
+      vi.setSystemTime(new Date(t0.getTime() + 16 * 60_000)); // past it — asks again
+      expect((await p.pollOnce()).error).toBeNull();
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

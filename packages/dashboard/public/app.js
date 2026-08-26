@@ -4,6 +4,7 @@
 const sessionsEl = document.getElementById("sessions");
 const feedEl = document.getElementById("feed");
 const dayCostEl = document.getElementById("day-cost");
+const dayNoteEl = document.getElementById("day-note");
 const monthCostEl = document.getElementById("month-cost");
 const monthNoteEl = document.getElementById("month-note");
 const budgetBarEl = document.getElementById("budget-bar");
@@ -116,36 +117,23 @@ function setDaemon(ok) {
 async function refreshDayCost() {
   try {
     const r = await fetch("/api/day");
-    const { dayCostUsd, dayMeterUsd, dayMidnightGap, monthCostUsd, monthlyBudgetUsd, account } = await r.json();
-    if (dayMidnightGap) {
-      // Meter polling was down across midnight, so the midnight baseline is stale and
-      // today's delta would be wrong. Warn instead of showing a misleading number.
-      dayCostEl.textContent = "⚠ daemon gap";
-      dayCostEl.classList.add("warn");
-      const since = new Date(dayMidnightGap.sinceMs).toLocaleString();
-      dayCostEl.title =
-        `Account meter wasn't polled across midnight (~${dayMidnightGap.gapMinutes} min gap from ${since}), ` +
-        `so "today" can't be measured against the meter. This-device estimate: ${usd(dayCostUsd)} ` +
-        `(tracks Claude usage on this machine only, not account-wide — likely a low estimate).`;
-    } else if (typeof dayMeterUsd === "number") {
-      // Account meter delta since local midnight — all surfaces, the same arithmetic
-      // as the claude.ai usage page. Local estimate stays visible as the tooltip.
-      dayCostEl.classList.remove("warn");
-      dayCostEl.textContent = usd(dayMeterUsd);
-      dayCostEl.title = `this device (transcript est.): ${usd(dayCostUsd)}`;
-    } else {
-      dayCostEl.classList.remove("warn");
-      dayCostEl.textContent = usd(dayCostUsd);
-      dayCostEl.title = "local transcript estimate — account meter takes over once samples span midnight";
-    }
+    const day = await r.json();
+    renderDay(day);
+    const { monthCostUsd, monthlyBudgetUsd, account, meterStale } = day;
     const acct = account && account.usage;
     if (acct && typeof acct.usedUsd === "number") {
-      // Anthropic's own meter (the claude.ai usage page number): account-wide,
-      // billing-cycle-correct. The local estimate stays visible as a tooltip.
-      renderMonth(acct.usedUsd, acct.monthlyLimitUsd, account.error ? "account · stale" : "account");
-      monthCostEl.title = `this device, calendar month (est.): ${usd(monthCostUsd)}`;
+      // Anthropic's own meter (the claude.ai usage page number): account-wide and
+      // billing-cycle-correct. When it's stale, say HOW stale — a bare "stale" read the
+      // same at two minutes and at nineteen hours, which is how a frozen meter once went
+      // a full day without anyone noticing.
+      renderMonth(acct.usedUsd, acct.monthlyLimitUsd, meterStale ? `account · ${ageLabel(meterStale.ageMinutes)} old` : "account", !!meterStale);
+      monthCostEl.title = meterStale
+        ? `Frozen at the reading from ${new Date(meterStale.fetchedAt).toLocaleString()}` +
+          (account.error ? ` — polling is failing (${account.error})` : "") +
+          `. this device, calendar month (est.): ${usd(monthCostUsd)}`
+        : `this device, calendar month (est.): ${usd(monthCostUsd)}`;
     } else if (typeof monthCostUsd === "number") {
-      renderMonth(monthCostUsd, monthlyBudgetUsd, "est.");
+      renderMonth(monthCostUsd, monthlyBudgetUsd, "est.", false);
       monthCostEl.title = "local transcript estimate — this device only";
     }
   } catch {
@@ -153,8 +141,78 @@ async function refreshDayCost() {
   }
 }
 
+/** Age a person can read at a glance: "45 min", "19h", "3d". */
+function ageLabel(minutes) {
+  if (minutes < 90) return `${minutes} min`;
+  const hours = minutes / 60;
+  return hours < 36 ? `${Math.round(hours)}h` : `${Math.round(hours / 24)}d`;
+}
+
+const AWAY_WORDS = { suspend: "asleep", "machine-off": "powered off", "daemon-down": "not being watched" };
+
+/** Short "Wed 5:41 PM" for a baseline instant. */
+function shortWhen(ms) {
+  return new Date(ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * Today tile. The number is the account meter's movement since its baseline reading, and
+ * the note says what that baseline is — a machine that sleeps through midnight has no
+ * midnight reading, and the difference is worth seeing rather than hiding.
+ */
+function renderDay({ dayCostUsd, dayMeterUsd, dayBaseline, meterStale }) {
+  const local = `this device (transcript est.): ${usd(dayCostUsd)}`;
+  if (typeof dayMeterUsd !== "number") {
+    // No usable meter delta. Show the local estimate and label it as one.
+    dayCostEl.textContent = usd(dayCostUsd);
+    setDayNote(
+      meterStale ? `est. · meter ${ageLabel(meterStale.ageMinutes)} old` : "est.",
+      meterStale
+        ? `The account meter hasn't been read since ${new Date(meterStale.fetchedAt).toLocaleString()}, so today can't be measured against it. ` +
+            `Showing this machine's transcript estimate, which tracks Claude usage here only and runs 12-16% low. ${local}`
+        : `Local transcript estimate, this machine only. The account meter takes over once it has a reading on both sides of midnight.`,
+      !!meterStale,
+    );
+    return;
+  }
+  dayCostEl.textContent = usd(dayMeterUsd);
+  const kind = dayBaseline && dayBaseline.kind;
+  if (kind === "pre-away") {
+    // Expected on a laptop: nothing read the meter overnight because the machine wasn't
+    // running, so the last waking reading is the baseline. Say so and move on.
+    const away = AWAY_WORDS[dayBaseline.awayReason] || "away";
+    setDayNote(
+      `since ${shortWhen(dayBaseline.at)}`,
+      `Measured from the last meter reading before this machine was ${away}` +
+        (dayBaseline.awayMinutes ? ` (${ageLabel(dayBaseline.awayMinutes)})` : "") +
+        `, not from midnight — nothing was watching the meter overnight. Anything spent on another device during that window lands in this figure. ${local}`,
+      false,
+    );
+    return;
+  }
+  if (kind === "stale") {
+    setDayNote(
+      `since ${shortWhen(dayBaseline.at)} ⚠`,
+      `Meter polling stopped at ${new Date(dayBaseline.at).toLocaleString()} while this machine was up, so the baseline predates midnight and this figure covers more than today. ${local}`,
+      true,
+    );
+    return;
+  }
+  setDayNote("", local, false);
+}
+
+/** Today's qualifier goes in the note; the dollar figure keeps its full size. */
+function setDayNote(text, tip, warn) {
+  dayNoteEl.textContent = text;
+  dayNoteEl.classList.toggle("warn", !!warn);
+  dayNoteEl.title = tip;
+  dayCostEl.classList.remove("warn");
+  dayCostEl.title = tip;
+}
+
 /** Month tile: value, optional "/$cap" + budget bar, and a source note ("account" or "est."). */
-function renderMonth(spentUsd, capUsd, note) {
+function renderMonth(spentUsd, capUsd, note, warn) {
+  monthNoteEl.classList.toggle("warn", !!warn);
   if (typeof capUsd === "number" && capUsd > 0) {
     const pct = Math.min(999, Math.round((spentUsd / capUsd) * 100));
     monthCostEl.textContent = `${usd(spentUsd)} / ${usd(capUsd)}`;
@@ -336,10 +394,12 @@ function fillCard(card, s) {
 
 async function refreshAnalytics() {
   try {
-    const [habits, tools, rtk] = await Promise.all([
+    const [habits, tools, rtk, audit] = await Promise.all([
       fetch("/api/habits").then((r) => r.json()),
       fetch("/api/tools").then((r) => r.json()),
       fetch("/api/rtk").then((r) => r.json()),
+      // 404s with {error} when auditing is off; renderAudit then hides the panel.
+      fetch("/api/audit?days=14").then((r) => r.json()),
     ]);
     const cw = habits.coldRewritesWeek;
     document.getElementById("cold-week").textContent =
@@ -363,6 +423,7 @@ async function refreshAnalytics() {
       [1, 2, 3, 4],
     );
     renderRtkGain(rtk.gain);
+    renderAudit(audit);
   } catch {
     /* daemon down */
   }
@@ -377,6 +438,105 @@ function table(headers, rows, numCols = []) {
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const fmtN = (n) => Number(n).toLocaleString();
+
+/**
+ * Cost-audit panel. The meter is the truth and ccc's per-turn math is a hypothesis, so
+ * this shows how the hypothesis is holding up: one ratio per model against the baseline
+ * that `ccc audit --accept` froze. The panel stays collapsed, so the summary line has to
+ * carry the glance — and it turns amber only when a model has drifted off its baseline,
+ * which is the sole part of this that is ever urgent.
+ */
+function renderAudit(a) {
+  const wrap = document.getElementById("audit-wrap");
+  if (!wrap) return;
+  // Auditing off, or the daemon predates it: no panel rather than an empty one.
+  if (!a || a.error || !a.attributed) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const note = document.getElementById("audit-note");
+  const figs = document.getElementById("audit-figs");
+  const foot = document.getElementById("audit-foot");
+  const drifted = (a.findings || []).filter((f) => f.kind === "drift");
+
+  if (!a.attributed.n) {
+    note.textContent = "— no reconciled windows yet";
+    note.classList.remove("warn");
+    figs.innerHTML = "";
+    document.getElementById("audit-models").innerHTML = "";
+    foot.innerHTML =
+      `<div>A window needs the account meter read at two moments that each follow a quiet stretch ` +
+      `with no local turns, so continuous work produces none. <code>ccc audit --backfill</code> rebuilds ` +
+      `past windows from meter samples already stored.</div>`;
+    return;
+  }
+
+  if (drifted.length) {
+    const d = a.drift.find((x) => x.model === drifted[0].subject) || a.drift[0];
+    note.textContent = d ? `— ⚠ ${d.model} ${d.baseline.toFixed(3)}x → ${d.current.toFixed(3)}x (${signed(d.changePct)}%)` : "— ⚠ price drift";
+    note.classList.add("warn");
+  } else {
+    note.textContent = `— ${a.attributed.ratio.toFixed(3)}x meter · ${a.attributed.n} windows · ${a.coverage.pct}% coverage`;
+    note.classList.remove("warn");
+  }
+
+  const gap = a.shortfall;
+  // shortfall.totalUsd is meter-minus-ccc (positive when ccc undercounts). Show it from
+  // ccc's side, so the sign matches the row above it and `ccc audit`'s residual line.
+  const cccVsMeter = -gap.totalUsd;
+  figs.innerHTML =
+    row("meter (authoritative)", usd(a.attributed.meterUsd), "") +
+    row("ccc (local math)", usd(a.attributed.localUsd), "") +
+    row(
+      "gap",
+      signedUsd(cccVsMeter),
+      `$${gap.perTurnUsd.toFixed(3)}/turn, or ${signed(gap.perLocalDollar * 100)}% per $ — whichever holds steady as windows accumulate is which it is`,
+    );
+
+  document.getElementById("audit-models").innerHTML = table(
+    ["Model", "Ratio", "Baseline", "Drift", "Meter", "ccc", "Windows"],
+    a.byModel.map((m) => {
+      const d = a.drift.find((x) => x.model === m.model);
+      return [
+        esc(m.model),
+        `${m.ratio.toFixed(3)}x`,
+        d ? `${d.baseline.toFixed(3)}x` : '<span class="soft">not set</span>',
+        d ? `<span class="${Math.abs(d.changePct) >= 10 ? "warn" : ""}">${signed(d.changePct)}%</span>` : "–",
+        usd(m.meterUsd),
+        usd(m.localUsd),
+        String(m.n),
+      ];
+    }),
+    [1, 2, 3, 4, 5, 6],
+  );
+
+  const lines = [];
+  lines.push(
+    a.unattributed.n
+      ? `<div>off-machine: <b>${usd(a.unattributed.meterUsd)}</b> moved the meter with no local turn across ` +
+          `${a.unattributed.n} window(s) — the Claude app, claude.ai, or Claude Code on another machine. ` +
+          `Excluded from the ratio above.</div>`
+      : `<div>off-machine: none seen. Every window that moved the meter had local turns to account for it.</div>`,
+  );
+  if (a.unmetered.n) {
+    lines.push(`<div>unmetered: ${usd(a.unmetered.localUsd)} of local turns with no meter movement (${a.unmetered.n} window(s)).</div>`);
+  }
+  for (const f of a.findings || []) {
+    lines.push(`<div class="${f.severity === "warn" ? "warn" : ""}">${f.severity === "warn" ? "⚠ " : "· "}${esc(f.message)}</div>`);
+  }
+  if (!a.drift.length) {
+    lines.push(`<div>No baselines accepted yet. Run <code>ccc audit --accept</code> once the ratios look right, and drift from them becomes a warning.</div>`);
+  }
+  foot.innerHTML = lines.join("");
+}
+
+const signed = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
+const signedUsd = (n) => `${n < 0 ? "-" : ""}${usd(Math.abs(n))}`;
+function row(label, value, aside) {
+  return `<dt>${label}</dt><dd>${value}</dd><dd class="aside">${aside ? esc(aside) : ""}</dd>`;
+}
+
 
 /** rtk's OWN measured savings (ground truth). The transcript can't see
     hook-rewritten commands, so this bar is the real "is rtk working?" signal. */

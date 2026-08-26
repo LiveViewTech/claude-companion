@@ -22,7 +22,8 @@ describe("pricing", () => {
 
   it("is date-aware for Sonnet 5 intro pricing", () => {
     expect(lookupPrice("claude-sonnet-5", "2026-07-11")?.inputPerM).toBe(2);
-    expect(lookupPrice("claude-sonnet-5", "2026-09-15")?.inputPerM).toBe(3);
+    // The scheduled 2026-09-01 rise to $3 was cancelled; $2 is now the standard price.
+    expect(lookupPrice("claude-sonnet-5", "2026-09-15")?.inputPerM).toBe(2);
   });
 
   it("computes turn cost with per-TTL write rates (hand-computed)", () => {

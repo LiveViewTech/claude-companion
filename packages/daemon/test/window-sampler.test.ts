@@ -59,83 +59,134 @@ describe("GET /api/day dayMeterUsd", () => {
       .run(ts, JSON.stringify({ usedUsd }));
   }
 
-  async function fetchDay(server: Server): Promise<{ dayMeterUsd: number | null; dayCostUsd: number }> {
-    return (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
-      dayMeterUsd: number | null;
-      dayCostUsd: number;
-    };
+  interface DayBody {
+    dayMeterUsd: number | null;
+    dayCostUsd: number;
+    dayBaseline: { at: number; kind: string; awayMinutes: number | null; awayReason: string | null } | null;
+    meterStale: { fetchedAt: number; ageMinutes: number } | null;
+  }
+
+  /** A live meter reading — fetchedAt matters now: a stale one is withheld, not subtracted. */
+  function meter(usedUsd: number, fetchedAt = Date.now()): () => unknown {
+    return () => ({ usage: { usedUsd, fetchedAt }, error: null });
+  }
+
+  async function fetchDay(server: Server): Promise<DayBody> {
+    return (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as DayBody;
+  }
+
+  function midnightMs(): number {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
   }
 
   it("reports meter(now) - meter(midnight) when samples span midnight", async () => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    insertMeterSample(midnight.getTime() - 3600_000, 200.0); // last reading before midnight
-    insertMeterSample(midnight.getTime() + 3600_000, 210.0); // intraday sample (ignored by baseline)
+    const midnight = midnightMs();
+    insertMeterSample(midnight - 3600_000, 200.0); // last reading before midnight
+    insertMeterSample(midnight + 3600_000, 210.0); // intraday sample (ignored by baseline)
     const server = new Server(new SessionTracker(store), store, 0);
-    server.accountUsage = () => ({ usage: { usedUsd: 276.3 }, error: null });
+    server.accountUsage = meter(276.3);
     await server.listen();
     try {
-      expect((await fetchDay(server)).dayMeterUsd).toBeCloseTo(76.3);
+      const day = await fetchDay(server);
+      expect(day.dayMeterUsd).toBeCloseTo(76.3);
+      expect(day.dayBaseline!.kind).toBe("midnight");
+      expect(day.meterStale).toBeNull();
     } finally {
       server.close();
     }
   });
 
   it("is null without a pre-midnight baseline or after a cycle reset", async () => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
+    const midnight = midnightMs();
     const server = new Server(new SessionTracker(store), store, 0);
-    server.accountUsage = () => ({ usage: { usedUsd: 50 }, error: null });
+    server.accountUsage = meter(50);
     await server.listen();
     try {
       expect((await fetchDay(server)).dayMeterUsd).toBeNull(); // no samples at all
-      insertMeterSample(midnight.getTime() - 60_000, 490.0); // baseline above current => meter reset
+      insertMeterSample(midnight - 60_000, 490.0); // baseline above current => meter reset
       expect((await fetchDay(server)).dayMeterUsd).toBeNull();
     } finally {
       server.close();
     }
   });
 
-  it("warns (dayMidnightGap set, meter suppressed) when polling was down across midnight", async () => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    // Baseline from before the outage; polling then resumes after midnight.
-    insertMeterSample(midnight.getTime() - 3 * 3600_000, 200.0);
-    store.recordAccountPollOk(midnight.getTime() - 3 * 3600_000, 5 * 60_000); // last ok, pre-outage
-    store.recordAccountPollOk(midnight.getTime() + 3600_000, 5 * 60_000); // recovery — logs the straddling gap
+  it("withholds the delta and reports the age when the newest reading is stale", async () => {
+    const midnight = midnightMs();
+    insertMeterSample(midnight - 3600_000, 200.0);
     const server = new Server(new SessionTracker(store), store, 0);
-    server.accountUsage = () => ({ usage: { usedUsd: 276.3 }, error: null });
+    // The 2026-08-25 failure: a wedged poller froze the meter, so current and baseline
+    // were the same number and "today" rendered as a confident $0.00.
+    server.accountUsage = meter(200.0, Date.now() - 19 * 3600_000);
     await server.listen();
     try {
-      const day = (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
-        dayMeterUsd: number | null;
-        dayMidnightGap: { gapMinutes: number; sinceMs: number } | null;
-      };
-      expect(day.dayMeterUsd).toBeNull(); // suppressed despite a usable baseline
-      expect(day.dayMidnightGap).not.toBeNull();
-      expect(day.dayMidnightGap!.gapMinutes).toBe(240); // 4h outage
+      const day = await fetchDay(server);
+      expect(day.dayMeterUsd).toBeNull();
+      expect(day.dayBaseline).toBeNull();
+      expect(day.meterStale!.ageMinutes).toBe(19 * 60);
     } finally {
       server.close();
     }
   });
 
-  it("does NOT warn for an ordinary mid-day poll gap that misses midnight", async () => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    insertMeterSample(midnight.getTime() - 3600_000, 200.0);
-    // Continuous coverage across midnight, then a >5min restart gap well into the day.
-    store.recordAccountPollOk(midnight.getTime() - 60_000, 5 * 60_000);
-    store.recordAccountPollOk(midnight.getTime() + 60_000, 5 * 60_000);
-    store.recordAccountPollOk(midnight.getTime() + 4 * 3600_000, 5 * 60_000); // intraday restart gap
+  it("keeps the pre-sleep reading as the baseline when the machine slept through midnight", async () => {
+    const midnight = midnightMs();
+    insertMeterSample(midnight - 3 * 3600_000, 200.0);
+    store.recordAccountPollOk(midnight - 3 * 3600_000, 5 * 60_000); // last ok before the laptop closed
+    // Suspend covers all but the two minutes between that poll and the lid closing.
+    store.recordAwayWindow({
+      start: midnight - 3 * 3600_000 + 120_000,
+      end: midnight + 3600_000,
+      ms: 4 * 3600_000 - 120_000,
+      reason: "suspend",
+    });
+    store.recordAccountPollOk(midnight + 3600_000, 5 * 60_000); // first poll after waking
     const server = new Server(new SessionTracker(store), store, 0);
-    server.accountUsage = () => ({ usage: { usedUsd: 210.0 }, error: null });
+    server.accountUsage = meter(276.3);
     await server.listen();
     try {
-      const day = (await (await fetch(`http://127.0.0.1:${server.boundPort}/api/day`)).json()) as {
-        dayMeterUsd: number | null;
-        dayMidnightGap: unknown;
-      };
-      expect(day.dayMidnightGap).toBeNull();
+      const day = await fetchDay(server);
+      expect(day.dayMeterUsd).toBeCloseTo(76.3); // a number, not a warning
+      expect(day.dayBaseline!.kind).toBe("pre-away");
+      expect(day.dayBaseline!.awayReason).toBe("suspend");
+      expect(day.dayBaseline!.at).toBe(midnight - 3 * 3600_000);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("flags the baseline as stale when polling broke across midnight and nothing was asleep", async () => {
+    const midnight = midnightMs();
+    insertMeterSample(midnight - 3 * 3600_000, 200.0);
+    store.recordAccountPollOk(midnight - 3 * 3600_000, 5 * 60_000); // last ok, pre-outage
+    store.recordAccountPollOk(midnight + 3600_000, 5 * 60_000); // recovery — logs the straddling gap
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = meter(276.3);
+    await server.listen();
+    try {
+      const day = await fetchDay(server);
+      expect(day.dayMeterUsd).toBeCloseTo(76.3); // still shown — with the caveat attached
+      expect(day.dayBaseline!.kind).toBe("stale");
+      expect(day.dayBaseline!.awayMinutes).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("treats an ordinary mid-day poll gap as a clean midnight baseline", async () => {
+    const midnight = midnightMs();
+    insertMeterSample(midnight - 3600_000, 200.0);
+    // Continuous coverage across midnight, then a >5min restart gap well into the day.
+    store.recordAccountPollOk(midnight - 60_000, 5 * 60_000);
+    store.recordAccountPollOk(midnight + 60_000, 5 * 60_000);
+    store.recordAccountPollOk(midnight + 4 * 3600_000, 5 * 60_000); // intraday restart gap
+    const server = new Server(new SessionTracker(store), store, 0);
+    server.accountUsage = meter(210.0);
+    await server.listen();
+    try {
+      const day = await fetchDay(server);
+      expect(day.dayBaseline!.kind).toBe("midnight");
       expect(day.dayMeterUsd).toBeCloseTo(10.0);
     } finally {
       server.close();

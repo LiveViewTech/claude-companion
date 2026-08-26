@@ -4,7 +4,9 @@ import type { PriceSpec, TtlTier, Usage } from "./types.ts";
  * Date-aware pricing table, USD per million tokens.
  * Derived rates (fixed multipliers of input price, per Anthropic docs):
  *   cache read = 0.1x · 5m cache write = 1.25x · 1h cache write = 2.0x
- * Sources: Anthropic pricing docs as of 2026-07. Sonnet 5 has intro pricing until 2026-08-31.
+ * Sources: Anthropic pricing docs, re-verified 2026-08-26 (multipliers and every current
+ * model rate confirmed; the 1M context window bills at standard rates on Claude 4.6+, so
+ * there is no long-context tier to model).
  * Verified 2026-07-28 against platform.claude.com/docs/en/about-claude/pricing — the
  * published per-model cache columns equal these multipliers exactly (e.g. Opus 5:
  * $5 base, $6.25 5m write, $10 1h write, $0.50 read), so deriving them is correct.
@@ -18,10 +20,13 @@ const TABLE: Record<string, PriceSpec[]> = {
   "claude-opus-4-6": [{ inputPerM: 5, outputPerM: 25 }],
   "claude-opus-4-5": [{ inputPerM: 5, outputPerM: 25 }],
   "claude-opus-4-1": [{ inputPerM: 15, outputPerM: 75 }],
-  "claude-sonnet-5": [
-    { inputPerM: 2, outputPerM: 10, until: "2026-09-01" },
-    { inputPerM: 3, outputPerM: 15, from: "2026-09-01" },
-  ],
+  // Sonnet 5's $2/$10 launched as introductory pricing "through 2026-08-31" and the
+  // scheduled 2026-09-01 rise to $3/$15 was CANCELLED — it is now the standard price
+  // (verified against the pricing docs 2026-08-26). The date window that encoded the
+  // rise is gone: had it stayed, every Sonnet 5 turn from 2026-09-01 would have been
+  // costed 50% high, and because TABLE deliberately outranks the resolver's OVERLAY,
+  // auto-resolve could not have corrected it.
+  "claude-sonnet-5": [{ inputPerM: 2, outputPerM: 10 }],
   "claude-sonnet-4-6": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-sonnet-4-5": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-haiku-4-5": [{ inputPerM: 1, outputPerM: 5 }],

@@ -54,6 +54,7 @@ with `rtk init -g --uninstall`.
 | `ccc install [--dry-run] [--no-rtk] [--rtk-version vX.Y.Z]` / `ccc uninstall` | Register/remove statusline + hooks (surgical edits, timestamped backups); installs rtk + its hook unless `--no-rtk` |
 | `ccc rtk [--check] [--force]` | Report rtk binary / hook / ripgrep status; install the binary if missing (`--check` reports only, exit 1 if incomplete) |
 | `ccc prices [--refresh]` | Model rates in use, marked built-in vs auto-resolved (with age); `--refresh` re-reads the published table |
+| `ccc audit [--days N] [--backfill] [--accept] [--json]` | Reconcile ccc's cost math against Anthropic's meter; `--backfill` rebuilds the period from stored samples, `--accept` freezes the current per-model ratios as the drift baseline |
 | `ccc launch --ttl 1h\|5m [--no-rtk] [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
 | `ccc code [dir] --ttl 1h\|5m` | Same, for VS Code (extension sessions inherit the env) |
 | `ccc daemon start\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
@@ -137,9 +138,23 @@ which is the only way to catch a profile that didn't take.
   and **Today** tiles read Anthropic's own usage meter (the claude.ai Usage-page number, via the OAuth
   usage endpoint), so they match the website account-wide — all machines/surfaces, correct billing
   cycle; the local transcript estimate becomes the tile tooltip and the offline fallback. "Today" is
-  the meter delta since local midnight, and warns ("⚠ daemon gap") instead of showing a wrong number
-  if meter polling was down across midnight (stale baseline) — the tooltip's fallback estimate is
-  this-device-only, not account-wide, so it can read low.
+  the meter delta since its baseline reading, and the tile note says what that baseline is: a real
+  midnight reading (bare number), the last reading before the machine slept or shut down ("since Tue
+  5:41 PM" — expected on a laptop, nothing was watching the meter overnight), or a baseline left old
+  by broken polling (same note, flagged). If the meter's newest reading itself goes stale the tiles
+  fall back to the local this-device estimate and say how old the meter is, rather than subtract a
+  frozen number from itself and report $0.00.
+- **Cost audit (permanent)** — the meter is the truth and ccc's per-turn math is a hypothesis, so
+  the daemon measures the hypothesis continuously. Every interval bounded by local quiet on both
+  sides yields an independent (authoritative dollars, local dollars) pair; `ccc audit` aggregates
+  them into an overall ratio plus per-model and per-session ratios. Quiet boundaries are what make
+  it honest: the meter trails live usage, so a boundary drawn mid-burst would separate a turn's cost
+  from the meter movement it caused. Freeze the ratios with `ccc audit --accept` and a later rate
+  change, expiring promotion or mispriced model shows up as drift — with a toast — instead of
+  silently moving every dollar figure. Windows where the meter moved with no local turn are spend
+  ccc cannot see (the Claude app, claude.ai, another machine) and are reported separately rather
+  than folded into the ratio. `--backfill` reconstructs past windows from meter samples already on
+  disk, so a fresh install can answer the question immediately.
 - **Keep-warm (experimental, API-billing only)** — arm per session in the dashboard; a Stop hook
   keeps the turn open and issues a minimal `ok` turn just before TTL expiry. Refuses to arm on
   1h-tier (subscription) sessions; soft ping cap; **every ping is measured from the transcript and
@@ -190,7 +205,7 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
   "warnBeforeSeconds": 60,
   "monthlyBudgetUsd": 500,
   "pricing": { "autoResolve": true, "refreshDays": 7 },
-  "accountUsage": { "enabled": true, "pollSeconds": 60 },
+  "accountUsage": { "enabled": true, "pollSeconds": 300 },
   "guardian": { "action": "handoff", "notifyPct": 80, "actPct": 90 },
   "keepwarm": { "enabled": true, "maxPingsPerIdle": 12 },
   "advisor": { "enabled": true, "nudgeEvery": 10 },
@@ -224,8 +239,10 @@ Turning the optional features on/off:
   re-checks already-resolved values. Off ⇒ an unknown model costs $0, its cache minimum falls
   back to 4096, and `ccc doctor` names it. Config-only, not in Controls.
 - **Account meter** — `accountUsage.enabled` feeds the month/today tiles from the claude.ai Usage
-  endpoint (`accountUsage.pollSeconds` between polls); off ⇒ tiles fall back to the local estimate.
-  Config-only, not in Controls.
+  endpoint (`accountUsage.pollSeconds` between polls, floored at 60); off ⇒ tiles fall back to the
+  local estimate. The endpoint rate-limits: a 60s cadence drew a 429 asking for hours of silence, so
+  the default is 300s and any server-requested backoff is capped at 15 minutes. Config-only, not in
+  Controls.
 
 The keep-warm, advisor, naming, guardian, card-view and turn-signal sound/flash settings are also live-togglable
 from the dashboard **Controls** panel (writes `config.json` and takes effect immediately, no daemon restart).

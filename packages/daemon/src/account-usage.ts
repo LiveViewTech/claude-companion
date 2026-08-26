@@ -16,6 +16,15 @@ import { claudeCredentialsPath } from "@ccc/core";
  */
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+/**
+ * Ceiling on a server-requested backoff. Observed 2026-08-25: a 429 came back with a
+ * Retry-After measured in hours; honored verbatim it took the meter dark until the next
+ * daemon restart (19h). That failure is silent rather than loud — "today" is a delta
+ * against the midnight reading, so a frozen meter reads as a confident $0.00, not an
+ * error. The endpoint gets the last word only up to this bound; worst case we ask again
+ * too early and collect another 429.
+ */
+const MAX_BACKOFF_MS = 15 * 60_000;
 /** UA the endpoint expects; matches what Claude Code itself sends. */
 const FALLBACK_USER_AGENT = "claude-code/2.1.204";
 
@@ -61,6 +70,8 @@ export interface AccountUsagePollerOptions {
   credentialsFile?: string;
   userAgent?: string;
   onUpdate?: (status: AccountUsageStatus) => void;
+  /** Operational log sink (backoff clamps). Nothing from the response body is logged. */
+  log?: (msg: string) => void;
 }
 
 export class AccountUsagePoller {
@@ -113,7 +124,12 @@ export class AccountUsagePoller {
     if (res.status === 401) return this.update(null, "auth-expired");
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("Retry-After"));
-      this.nextAllowedAt = Date.now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : this.opts.pollMs);
+      const asked = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : this.opts.pollMs;
+      const backoff = Math.min(asked, MAX_BACKOFF_MS);
+      if (asked > backoff) {
+        this.opts.log?.(`account-usage: 429 asked for a ${Math.round(asked / 1000)}s backoff, clamped to ${backoff / 1000}s`);
+      }
+      this.nextAllowedAt = Date.now() + backoff;
       return this.update(null, "rate-limited");
     }
     if (!res.ok) return this.update(null, `http-${res.status}`);

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { appPaths, claudeProjectsDir } from "@ccc/core";
-import { loadConfig, saveConfig } from "./config.ts";
+import { loadConfig, saveConfig, type CccConfig } from "./config.ts";
 import { applyConfigUpdate, type ConfigUpdate } from "./config-runtime.ts";
 import { Store } from "./store.ts";
 import { SessionTracker } from "./session-tracker.ts";
@@ -17,8 +17,29 @@ import { Namer } from "./namer.ts";
 import { launchTerminal } from "./launcher.ts";
 import { computeExactAttribution } from "./attribution.ts";
 import { AccountUsagePoller } from "./account-usage.ts";
+import { AwakeTracker } from "./awake-tracker.ts";
+import { Auditor } from "./audit.ts";
 import { WindowSampler } from "./window-sampler.ts";
 import { PriceResolver } from "./price-resolver.ts";
+
+/**
+ * Toast an audit finding at most once a day per subject, and record it either way. A
+ * drifting price ratio only matters if somebody hears about it, and stops mattering if
+ * they hear about it every five minutes.
+ */
+function alertOnAuditFindings(auditor: Auditor, store: Store, cfg: CccConfig): void {
+  if (!cfg.audit.alertOnDrift) return;
+  const now = Date.now();
+  for (const finding of auditor.report(now - 14 * 86_400_000).findings) {
+    if (finding.severity !== "warn") continue;
+    const key = `audit_alerted:${finding.kind}:${finding.subject}`;
+    const last = Number(store.getMeta(key) ?? 0);
+    if (Number.isFinite(last) && now - last < 24 * 3600_000) continue;
+    store.setMeta(key, String(now));
+    store.logEvent("audit_finding", null, finding);
+    toast({ title: `Cost audit: ${finding.subject}`, message: finding.message }, cfg.toasts);
+  }
+}
 
 export async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -56,20 +77,41 @@ export async function main(): Promise<void> {
   // events table so the real reset cadence — e.g. the undocumented ~72h "weekly"
   // advance — is reconstructable; /api/windows serves it to the dashboard chart.
   const windowSampler = new WindowSampler(store);
+  // Suspend/downtime log. Runs whether or not the meter is being polled: it is what
+  // lets the "today" baseline tell a laptop that slept through midnight (fine, use the
+  // pre-sleep reading) from polling that broke while the machine was up (flag it).
+  const awakeTracker = new AwakeTracker({ store, log: (msg) => console.log(msg) });
+  awakeTracker.start();
+  // Permanent cost audit. Fed from the same successful polls that move the meter samples,
+  // so it costs no extra requests.
+  const auditor = cfg.audit.enabled
+    ? new Auditor({ store, quietMs: Math.max(5, cfg.audit.quietMinutes) * 60_000, log: (msg) => console.log(msg) })
+    : null;
+  if (auditor) server.auditReport = (sinceMs) => auditor.report(sinceMs);
   if (cfg.accountUsage.enabled) {
-    const pollMs = Math.max(15, cfg.accountUsage.pollSeconds) * 1000;
-    // A break in successful polling longer than this means the daemon (or the
-    // network/token) was down; recordAccountPollOk logs it so a gap straddling
-    // local midnight can invalidate the stale meter baseline (see dayMidnightGap).
+    // Floor of 60s: a 60s cadence — 1,440 requests/day at an undocumented endpoint —
+    // is what earned the 429 that froze the meter for 19h on 2026-08-25. The number
+    // moves in dollars over a month; 5 minutes resolves it fine.
+    const pollMs = Math.max(60, cfg.accountUsage.pollSeconds) * 1000;
+    // A break in successful polling longer than this means nobody was watching the
+    // meter; recordAccountPollOk logs it so a gap straddling local midnight can be
+    // matched against the away windows that explain it (see Server.dayBaseline).
     const pollGapMs = Math.max(5 * 60_000, pollMs * 4);
+    // Withhold "today" once the newest reading is four missed polls old, rather than
+    // subtract a stale number from itself and report $0.00.
+    server.meterStaleMs = Math.max(4 * pollMs, 15 * 60_000);
     accountPoller = new AccountUsagePoller({
       pollMs,
+      log: (msg) => console.log(msg),
       onUpdate: (status) => {
         // Only a genuinely successful poll (error === null) counts as meter coverage;
         // status.usage lingers as last-good across errors, so gate on error too.
         if (!status.error && status.usage) {
           windowSampler.observeMeter(status.usage.usedUsd);
           store.recordAccountPollOk(Date.now(), pollGapMs);
+          if (auditor && auditor.observe(status.usage.usedUsd, status.usage.fetchedAt)) {
+            alertOnAuditFindings(auditor, store, cfg);
+          }
         }
         for (const w of status.usage?.windows ?? []) {
           windowSampler.observe({ window: w.name, utilization: w.utilization, resetsAt: w.resetsAt, source: "oauth" });

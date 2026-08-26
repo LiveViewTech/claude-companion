@@ -12,7 +12,7 @@
   <div class="brand">claude-companion</div>
   <div class="tiles">
     <div class="tile">
-      <div class="tile-label">Today</div>
+      <div class="tile-label">Today <span class="soft" id="day-note"></span></div>
       <div class="tile-value" id="day-cost">–</div>
     </div>
     <div class="tile">
@@ -86,6 +86,15 @@
     <details class="collapsible">
       <summary>Cache economics <span id="cold-week" class="soft"></span></summary>
       <div id="habits" class="table-wrap"></div>
+    </details>
+  </section>
+
+  <section class="feed-wrap" id="audit-wrap" hidden>
+    <details class="collapsible">
+      <summary>Cost audit <span id="audit-note" class="soft"></span></summary>
+      <div id="audit-figs" class="audit-figs"></div>
+      <div id="audit-models" class="table-wrap"></div>
+      <div id="audit-foot" class="audit-foot"></div>
     </details>
   </section>
 

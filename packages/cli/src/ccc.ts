@@ -7,6 +7,7 @@ import { install, uninstall } from "./install.ts";
 import { launch } from "./launch.ts";
 import { rtkCommand } from "./rtk-setup.ts";
 import { prices } from "./prices.ts";
+import { audit } from "./audit.ts";
 
 const [, , cmd, ...args] = process.argv;
 
@@ -40,6 +41,8 @@ async function run(): Promise<number> {
       return rtkCommand(args);
     case "prices":
       return prices(args);
+    case "audit":
+      return audit(args);
     case "launch":
       return launch(args, false);
     case "code":
@@ -56,6 +59,10 @@ commands:
   ccc uninstall                  remove our statusline + hooks (with backup; leaves rtk alone)
   ccc rtk [--check] [--force]    report rtk binary/hook/ripgrep status; install the binary if missing
   ccc prices [--refresh]         show model rates (built-in vs auto-resolved); --refresh re-reads the published table
+  ccc audit [--days N] [--json] [--backfill] [--accept]
+                                 reconcile ccc's cost math against Anthropic's meter; --backfill rebuilds
+                                 the period from stored meter samples; --accept freezes the current
+                                 per-model ratios as the baseline drift is measured against
   ccc launch [--ttl 1h|5m] [--no-rtk] [-- args]   start claude with a cache-TTL profile
   ccc code [dir] [--ttl 1h|5m]   start VS Code with a cache-TTL profile
   ccc daemon start|stop|status   control the background daemon

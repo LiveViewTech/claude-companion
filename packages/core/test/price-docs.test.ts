@@ -299,7 +299,7 @@ describe("specsFor + overlay precedence", () => {
     // A flattened scrape of Sonnet 5 must not clobber the curated intro-pricing window.
     registerResolvedPrices({ "claude-sonnet-5": { inputPerM: 999, outputPerM: 999 } });
     const p = lookupPrice("claude-sonnet-5", "2026-07-28T00:00:00Z");
-    expect(p).toEqual({ inputPerM: 2, outputPerM: 10, until: "2026-09-01" });
+    expect(p).toEqual({ inputPerM: 2, outputPerM: 10 });
     clearResolvedPrices();
   });
 

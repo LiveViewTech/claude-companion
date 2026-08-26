@@ -45,8 +45,31 @@ export interface CccConfig {
   accountUsage: {
     /** Master switch. */
     enabled: boolean;
-    /** Seconds between polls. */
+    /**
+     * Seconds between polls, floored at 60 by the daemon. The endpoint rate-limits:
+     * a 60s cadence (1,440 requests/day) drew a 429 whose Retry-After ran into hours.
+     * The number tracks a monthly total, so a coarse interval costs nothing.
+     */
     pollSeconds: number;
+  };
+  /**
+   * Cost audit — reconciles ccc's own pricing math against Anthropic's meter, continuously.
+   * Every interval bounded by local quiet on both sides gives an independent (authoritative
+   * dollars, local dollars) pair; their ratio is what catches a rate change, an expiring
+   * promotion or a mispriced model, and windows where the meter moved with no local turn
+   * are spend ccc can't see (the Claude app, another machine). Needs accountUsage on.
+   */
+  audit: {
+    /** Master switch. */
+    enabled: boolean;
+    /**
+     * Minutes of local quiet required on both sides of a window boundary. Must exceed the
+     * meter's lag behind live usage, or a boundary drawn mid-burst splits a turn's cost
+     * from the meter movement it caused. Longer = fewer, cleaner windows.
+     */
+    quietMinutes: number;
+    /** Toast when a model's ratio drifts from its accepted baseline. */
+    alertOnDrift: boolean;
   };
   guardian: {
     /** off | notify-only | wrapup | handoff */
@@ -149,7 +172,8 @@ export const DEFAULTS: CccConfig = {
   warnBeforeSeconds: 60,
   monthlyBudgetUsd: null,
   pricing: { autoResolve: true, refreshDays: 7 },
-  accountUsage: { enabled: true, pollSeconds: 60 },
+  accountUsage: { enabled: true, pollSeconds: 300 },
+  audit: { enabled: true, quietMinutes: 15, alertOnDrift: true },
   guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
   keepwarm: { enabled: true, allow1hArm: false, maxPingsPerIdle: 12 },
   advisor: { enabled: true, nudgeEvery: 10 },
@@ -181,6 +205,7 @@ export function loadConfig(): CccConfig {
       ...raw,
       pricing: { ...DEFAULTS.pricing, ...(raw.pricing ?? {}) },
       accountUsage: { ...DEFAULTS.accountUsage, ...(raw.accountUsage ?? {}) },
+      audit: { ...DEFAULTS.audit, ...(raw.audit ?? {}) },
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
       keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
       advisor: { ...DEFAULTS.advisor, ...(raw.advisor ?? {}) },

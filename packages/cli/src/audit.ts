@@ -1,0 +1,127 @@
+import path from "node:path";
+import { appPaths } from "@ccc/core";
+import { loadConfig } from "@ccc/daemon/config";
+import { Auditor, type AuditReport } from "@ccc/daemon/audit";
+import { Store } from "@ccc/daemon/store";
+
+/**
+ * `ccc audit` — how well ccc's own pricing math matches Anthropic's meter.
+ *
+ * Reads the database directly rather than the daemon's HTTP API, so a report is available
+ * even when the daemon is down (WAL mode makes a concurrent reader safe). `--backfill` is
+ * the one subcommand that writes, and it takes the write lock for the whole rebuild so it
+ * can't interleave with a running daemon. The daemon is what BUILDS the windows, though:
+ * with it stopped, no new ones accumulate.
+ */
+export async function audit(args: string[]): Promise<number> {
+  const cfg = loadConfig();
+  const daysIdx = args.indexOf("--days");
+  const days = daysIdx >= 0 ? Math.max(1, Number(args[daysIdx + 1]) || 14) : 14;
+  const store = new Store(path.join(appPaths().state, "ccc.db"));
+  try {
+    const auditor = new Auditor({ store, quietMs: Math.max(5, cfg.audit.quietMinutes) * 60_000 });
+    const since = Date.now() - days * 86_400_000;
+
+    if (args.includes("--backfill")) {
+      // Rebuild the period from meter samples already on disk instead of waiting for
+      // windows to accumulate live.
+      const { windows, instants, skippedInGaps } = auditor.backfill(since);
+      console.log(`rebuilt ${windows} window(s) from ${instants} quiet instant(s) over the last ${days}d` +
+        (skippedInGaps ? `; ${skippedInGaps} instant(s) dropped for falling inside a poll gap` : ""));
+      console.log("");
+      printReport(auditor.report(since), days, cfg.audit.enabled);
+      return 0;
+    }
+
+    if (args.includes("--accept")) {
+      const accepted = auditor.acceptBaselines(since);
+      if (!accepted.length) {
+        console.log("nothing to accept: no model has enough windows yet (need 8+). Try again after more work.");
+        return 1;
+      }
+      console.log("accepted as the baseline drift is measured against:");
+      for (const a of accepted) console.log(`  ${a.model.padEnd(26)} ${a.ratio.toFixed(3)}x  (${a.n} windows)`);
+      return 0;
+    }
+
+    const report = auditor.report(since);
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(report, null, 2));
+      return 0;
+    }
+    printReport(report, days, cfg.audit.enabled);
+    // Exit 1 on anything worth acting on, so a cron/CI caller can notice.
+    return report.findings.some((f) => f.severity === "warn") ? 1 : 0;
+  } finally {
+    store.close();
+  }
+}
+
+function printReport(r: AuditReport, days: number, enabled: boolean): void {
+  const usd = (n: number) => `$${n.toFixed(2)}`;
+  console.log(`cost audit — last ${days}d${enabled ? "" : "  (audit.enabled is FALSE: no new windows are being built)"}`);
+  console.log(`window: ${new Date(r.from).toLocaleString()} -> ${new Date(r.to).toLocaleString()}`);
+  console.log("");
+
+  if (r.attributed.n === 0) {
+    console.log("no reconciled windows yet.");
+    console.log("");
+    console.log("A window needs the account meter read at two moments that each follow a quiet");
+    console.log("stretch with no local turns. Continuous work, or a daemon that isn't polling,");
+    console.log("produces none. Check `ccc daemon status` and give it a work session with breaks.");
+    return;
+  }
+
+  // The headline: what a dollar of real spend looks like in ccc's arithmetic.
+  const pct = (r.attributed.ratio - 1) * 100;
+  console.log(`ccc prices ${r.attributed.ratio.toFixed(3)}x the meter  (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)`);
+  console.log(`  meter (authoritative): ${usd(r.attributed.meterUsd)}`);
+  console.log(`  ccc  (local math)    : ${usd(r.attributed.localUsd)}`);
+  console.log(`  residual             : ${usd(r.attributed.localUsd - r.attributed.meterUsd)} over ${r.attributed.n} reconciled window(s)`);
+  console.log("");
+  console.log(
+    `gap shape: ${usd(r.shortfall.perTurnUsd)}/turn, or ${(r.shortfall.perLocalDollar * 100).toFixed(1)}% on top of local spend, ` +
+      `over ${r.shortfall.turns} turns — whichever of those holds steady as windows accumulate is what the gap IS`,
+  );
+  console.log(`coverage: ${r.coverage.pct}% of the period's ${usd(r.coverage.meterMovedUsd)} of meter movement fell inside a window`);
+  if (r.unattributed.n) {
+    console.log(`off-machine: ${usd(r.unattributed.meterUsd)} moved the meter with no local turn (${r.unattributed.n} window(s))`);
+  }
+  if (r.unmetered.n) {
+    console.log(`unmetered  : ${usd(r.unmetered.localUsd)} of local turns with no meter movement (${r.unmetered.n} window(s))`);
+  }
+
+  if (r.byModel.length) {
+    console.log("");
+    console.log("by model (windows one model dominated):");
+    console.log(`  ${"model".padEnd(26)} ${"ratio".padStart(7)} ${"meter".padStart(10)} ${"ccc".padStart(10)}   windows`);
+    for (const m of r.byModel) {
+      console.log(`  ${m.model.padEnd(26)} ${(m.ratio.toFixed(3) + "x").padStart(7)} ${usd(m.meterUsd).padStart(10)} ${usd(m.localUsd).padStart(10)}   ${m.n}`);
+    }
+  }
+
+  if (r.bySession.length) {
+    console.log("");
+    console.log("by session (windows one session dominated):");
+    for (const s of r.bySession.slice(0, 10)) {
+      console.log(`  ${s.sessionId.slice(0, 8).padEnd(10)} ${(s.ratio.toFixed(3) + "x").padStart(7)} ${usd(s.meterUsd).padStart(10)} ${usd(s.localUsd).padStart(10)}   ${s.n}`);
+    }
+  }
+
+  if (r.drift.length) {
+    console.log("");
+    console.log("drift vs accepted baselines:");
+    for (const d of r.drift) {
+      console.log(`  ${d.model.padEnd(26)} ${d.baseline.toFixed(3)}x -> ${d.current.toFixed(3)}x  (${d.changePct >= 0 ? "+" : ""}${d.changePct}%)`);
+    }
+  } else {
+    console.log("");
+    console.log("no accepted baselines yet — run `ccc audit --accept` once the ratios look right,");
+    console.log("and drift from them becomes a warning.");
+  }
+
+  if (r.findings.length) {
+    console.log("");
+    for (const f of r.findings) console.log(`${f.severity === "warn" ? "⚠" : "·"} ${f.message}`);
+  }
+}
