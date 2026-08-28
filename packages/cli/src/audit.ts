@@ -80,9 +80,14 @@ function printReport(r: AuditReport, days: number, enabled: boolean): void {
   console.log(`  residual             : ${usd(r.attributed.localUsd - r.attributed.meterUsd)} over ${r.attributed.n} reconciled window(s)`);
   console.log("");
   console.log(
-    `gap shape: ${usd(r.shortfall.perTurnUsd)}/turn, or ${(r.shortfall.perLocalDollar * 100).toFixed(1)}% on top of local spend, ` +
-      `over ${r.shortfall.turns} turns — whichever of those holds steady as windows accumulate is what the gap IS`,
+    `gap shape: ${usd(r.shortfall.perTurnUsd)} per turn, or ` +
+      `${(r.shortfall.perLocalDollar * 100).toFixed(1)}% on top of ccc's figure, over ${r.shortfall.turns} turns.`,
   );
+  console.log("  Both descriptions fit the data so far, and they predict different things, so watch");
+  console.log("  which one stays steady as more windows arrive. Steady dollars-per-turn means a charge");
+  console.log("  per request (web search bills $10 per 1,000 searches). A steady percentage means a");
+  console.log("  multiplier on spend (fast mode bills Opus 5 at 2x; US-pinned inference is 1.1x on");
+  console.log("  everything). Neither appears in the transcript, so it has to be inferred here.");
   console.log(`coverage: ${r.coverage.pct}% of the period's ${usd(r.coverage.meterMovedUsd)} of meter movement fell inside a window`);
   if (r.unattributed.n) {
     console.log(`off-machine: ${usd(r.unattributed.meterUsd)} moved the meter with no local turn (${r.unattributed.n} window(s))`);

@@ -491,7 +491,13 @@ function renderAudit(a) {
     row(
       "gap",
       signedUsd(cccVsMeter),
-      `$${gap.perTurnUsd.toFixed(3)}/turn, or ${signed(gap.perLocalDollar * 100)}% per $ — whichever holds steady as windows accumulate is which it is`,
+      `= $${gap.perTurnUsd.toFixed(3)} per turn, or ${signed(gap.perLocalDollar * 100)}% on top of ccc's figure`,
+      `Two ways of describing the same gap. Both fit the data so far, and they predict different ` +
+        `things, so watch which one stays steady as more windows arrive. If the per-turn dollars hold ` +
+        `steady, the gap is a charge per request: web search bills $10 per 1,000 searches. If the ` +
+        `percentage holds steady, it is a multiplier on spend: fast mode bills Opus 5 at 2x, and ` +
+        `US-pinned inference is 1.1x on everything. Neither is visible in the transcript, which is ` +
+        `why this has to be inferred from the meter.`,
     );
 
   document.getElementById("audit-models").innerHTML = table(
@@ -500,7 +506,7 @@ function renderAudit(a) {
       const d = a.drift.find((x) => x.model === m.model);
       return [
         esc(m.model),
-        `${m.ratio.toFixed(3)}x`,
+        `${m.ratio.toFixed(3)}x${m.n < AUDIT_MIN_N ? '<span class="soft" title="Too few windows to trust yet.">*</span>' : ""}`,
         d ? `${d.baseline.toFixed(3)}x` : '<span class="soft">not set</span>',
         d ? `<span class="${Math.abs(d.changePct) >= 10 ? "warn" : ""}">${signed(d.changePct)}%</span>` : "–",
         usd(m.meterUsd),
@@ -525,16 +531,25 @@ function renderAudit(a) {
   for (const f of a.findings || []) {
     lines.push(`<div class="${f.severity === "warn" ? "warn" : ""}">${f.severity === "warn" ? "⚠ " : "· "}${esc(f.message)}</div>`);
   }
+  if (a.byModel.some((m) => m.n < AUDIT_MIN_N)) {
+    lines.push(
+      `<div>* measured from fewer than ${AUDIT_MIN_N} windows, so treat that ratio as provisional. ` +
+        `A baseline needs ${AUDIT_MIN_N}.</div>`,
+    );
+  }
   if (!a.drift.length) {
     lines.push(`<div>No baselines accepted yet. Run <code>ccc audit --accept</code> once the ratios look right, and drift from them becomes a warning.</div>`);
   }
   foot.innerHTML = lines.join("");
 }
 
+/** Windows a model needs before its ratio is worth acting on. Mirrors MIN_DRIFT_N in audit.ts. */
+const AUDIT_MIN_N = 8;
 const signed = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
 const signedUsd = (n) => `${n < 0 ? "-" : ""}${usd(Math.abs(n))}`;
-function row(label, value, aside) {
-  return `<dt>${label}</dt><dd>${value}</dd><dd class="aside">${aside ? esc(aside) : ""}</dd>`;
+function row(label, value, aside, tip) {
+  const t = tip ? ` title="${esc(tip)}"` : "";
+  return `<dt${t}>${label}</dt><dd${t}>${value}</dd><dd class="aside"${t}>${aside ? esc(aside) : ""}</dd>`;
 }
 
 

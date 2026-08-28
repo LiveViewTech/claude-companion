@@ -85,8 +85,35 @@ describe("Cost audit panel (real index.html + app.js)", () => {
     expect(figs).toContain("$137.96");
     // ccc reads $29.90 BELOW the meter, so the gap row is negative from ccc's side.
     expect(figs).toContain("-$29.90");
-    expect(figs).toContain("$0.021/turn");
-    expect(figs).toContain("+21.7% per $");
+    expect(figs).toContain("$0.021 per turn");
+    expect(figs).toContain("+21.7% on top of ccc's figure");
+  });
+
+  it("explains in the tooltip what the two gap figures would each mean", () => {
+    const app = loadApp();
+    app.renderAudit(report());
+    // The aside states both figures; the tooltip is where their meaning lives.
+    const tip = document.querySelector("#audit-figs dd.aside:last-child").title;
+    expect(tip).toContain("charge per request");
+    expect(tip).toContain("multiplier on spend");
+    expect(tip).toContain("$10 per 1,000 searches");
+  });
+
+  it("marks a ratio measured from too few windows as provisional", () => {
+    const app = loadApp();
+    app.renderAudit({
+      ...report(),
+      byModel: [
+        { model: "claude-opus-5", n: 11, meterUsd: 60.22, localUsd: 51.84, ratio: 0.8611 },
+        { model: "claude-fable-5", n: 1, meterUsd: 2.14, localUsd: 1.97, ratio: 0.922 },
+      ],
+    });
+    const rows = [...document.querySelectorAll("#audit-models tbody tr")].map((tr) =>
+      [...tr.children].map((td) => td.textContent),
+    );
+    expect(rows[0][1]).toBe("0.861x"); // 11 windows: stands on its own
+    expect(rows[1][1]).toBe("0.922x*"); // 1 window: flagged
+    expect(foot().textContent).toContain("provisional");
   });
 
   it("rates each model against its accepted baseline", () => {
