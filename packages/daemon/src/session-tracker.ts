@@ -3,6 +3,7 @@ import {
   classifyCommand,
   isColdRewrite,
   modelSwitchCostUsd,
+  modsOf,
   prefixTaxUsd,
   prefixTokens,
   rewriteCostUsd,
@@ -10,6 +11,7 @@ import {
   ttlTierOf,
   turnCost,
   type Entry,
+  type RateMods,
   type SessionState,
   type TtlTier,
 } from "@ccc/core";
@@ -89,7 +91,7 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
 
     // Record tool uses for attribution (even on sidechains — they burn tokens too).
     for (const tu of entry.toolUses) {
-      const cc = tu.command ? classifyCommand(tu.command) : undefined;
+      const commandClass = tu.command ? classifyCommand(tu.command) : undefined;
       this.store.insertToolCall({
         toolUseId: tu.id,
         sessionId: entry.sessionId,
@@ -97,8 +99,7 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
         ts,
         toolName: tu.name,
         command: tu.command,
-        commandClass: cc?.cls,
-        rtkWrapped: cc?.rtkWrapped ?? false,
+        commandClass,
       });
     }
 
@@ -111,6 +112,10 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       // later turns pick up the resolved rate.
       this.onModelSeen?.(model);
       const cost = turnCost(usage, model, entry.timestamp);
+      // Fast mode and US-only inference are per-request, so they are read off this turn's
+      // usage rather than assumed for the session: a /fast toggle mid-session changes the
+      // rate from the next turn on, and the projections below must follow it.
+      const mods = modsOf(usage);
       const prefix = prefixTokens(usage);
       const inserted = this.store.insertTurn({
         uuid: turnKey,
@@ -125,6 +130,8 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
         costUsd: cost.totalUsd,
         prefixTok: prefix,
         isSidechain: entry.isSidechain ?? false,
+        speed: usage.speed,
+        geo: usage.inference_geo,
       });
 
       // Gap analysis against the previous turn (main chain only, deduped inserts only).
@@ -154,19 +161,20 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
         // Update live cache state from this turn.
         const tier = ttlTierOf(usage) ?? state.ttlTier;
         state.ttlTier = tier;
+        state.rateMods = mods;
         state.lastTurnAt = ts;
         state.expiresAt = tier ? ts + ttlSeconds(tier) * 1000 : null;
         state.prefixTokens = prefix;
-        state.rewriteCostUsd = tier && state.model ? rewriteCostUsd(prefix, tier, state.model) : 0;
+        state.rewriteCostUsd = tier && state.model ? rewriteCostUsd(prefix, tier, state.model, mods) : 0;
         state.modelSwitchCostUsd = {};
         state.prefixTaxByModel = {};
         for (const m of CANDIDATE_MODELS) {
           if (state.model && m !== normalize(state.model)) {
-            state.modelSwitchCostUsd[m] = modelSwitchCostUsd(prefix, tier, m);
+            state.modelSwitchCostUsd[m] = modelSwitchCostUsd(prefix, tier, m, mods);
           }
-          state.prefixTaxByModel[m] = prefixTaxUsd(prefix, m);
+          state.prefixTaxByModel[m] = prefixTaxUsd(prefix, m, mods);
         }
-        state.prefixTaxUsd = state.model ? prefixTaxUsd(prefix, state.model) : 0;
+        state.prefixTaxUsd = state.model ? prefixTaxUsd(prefix, state.model, mods) : 0;
       }
       if (inserted) {
         state.sessionCostUsd += cost.totalUsd;
@@ -223,6 +231,26 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
     return true;
   }
 
+  /**
+   * Record Claude Code's own running cost for this session, couriered by the statusline.
+   * Kept beside `sessionCostUsd` rather than replacing it: the two are derived
+   * independently (their number, our transcript math), so the gap between them is the
+   * only signal either one is wrong. Ignores stale couriers and unknown sessions.
+   */
+  applyOfficialCost(sessionId: string, usd: number, at: number): SessionState | undefined {
+    const state = this.sessions.get(sessionId);
+    if (!state || !Number.isFinite(usd) || usd < 0) return undefined;
+    if (state.officialCostAt != null && at <= state.officialCostAt) return undefined;
+    if (state.officialCostUsd === usd) {
+      state.officialCostAt = at;
+      return undefined; // same number, nothing to redraw
+    }
+    state.officialCostUsd = usd;
+    state.officialCostAt = at;
+    state.updatedAt = Date.now();
+    return state;
+  }
+
   /** Restore cumulative counters from the DB after a restart (before live tailing). */
   restoreFromStore(): void {
     const rows = this.store.db
@@ -247,15 +275,19 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       state.lastTurnAt = r.last_ts;
       state.expiresAt = state.ttlTier ? r.last_ts + ttlSeconds(state.ttlTier) * 1000 : null;
       const last = this.store.db
-        .prepare(`SELECT prefix_tok FROM turns WHERE session_id = ? AND is_sidechain = 0 ORDER BY ts DESC LIMIT 1`)
-        .get(r.sid) as { prefix_tok: number } | undefined;
+        .prepare(`SELECT prefix_tok, speed, geo FROM turns WHERE session_id = ? AND is_sidechain = 0 ORDER BY ts DESC LIMIT 1`)
+        .get(r.sid) as { prefix_tok: number; speed: string | null; geo: string | null } | undefined;
       state.prefixTokens = last?.prefix_tok ?? 0;
+      // Restore the premium modifiers with the counters, or a restart would quote a
+      // fast-mode session's next re-write at half price until its next turn lands.
+      const mods: RateMods = { speed: last?.speed ?? undefined, geo: last?.geo ?? undefined };
+      state.rateMods = mods;
       if (state.ttlTier && state.model) {
-        state.rewriteCostUsd = rewriteCostUsd(state.prefixTokens, state.ttlTier, state.model);
+        state.rewriteCostUsd = rewriteCostUsd(state.prefixTokens, state.ttlTier, state.model, mods);
       }
-      state.prefixTaxUsd = state.model ? prefixTaxUsd(state.prefixTokens, state.model) : 0;
+      state.prefixTaxUsd = state.model ? prefixTaxUsd(state.prefixTokens, state.model, mods) : 0;
       state.prefixTaxByModel = {};
-      for (const m of CANDIDATE_MODELS) state.prefixTaxByModel[m] = prefixTaxUsd(state.prefixTokens, m);
+      for (const m of CANDIDATE_MODELS) state.prefixTaxByModel[m] = prefixTaxUsd(state.prefixTokens, m, mods);
       state.updatedAt = Date.now();
       this.sessions.set(r.sid, state);
     }
@@ -301,11 +333,14 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       sessionId,
       projectSlug,
       ttlTier: null,
+      rateMods: {},
       expiresAt: null,
       lastTurnAt: null,
       prefixTokens: 0,
       rewriteCostUsd: 0,
       sessionCostUsd: 0,
+      officialCostUsd: null,
+      officialCostAt: null,
       turns: 0,
       modelSwitchCostUsd: {},
       prefixTaxUsd: 0,

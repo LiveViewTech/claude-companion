@@ -26,7 +26,6 @@ transcripts ──▶ daemon (watch/tail ▸ SQLite ▸ economics ▸ policy) �
 ```sh
 npm install
 node packages/cli/src/ccc.ts install      # statusline + hooks into ~/.claude/settings.json (backup taken)
-                                          # also installs rtk + its hook (skip with --no-rtk)
 node packages/cli/src/ccc.ts daemon start
 node packages/cli/src/ccc.ts open         # dashboard
 node packages/cli/src/ccc.ts doctor       # schema canary + health
@@ -34,31 +33,17 @@ node packages/cli/src/ccc.ts doctor       # schema canary + health
 
 Restart Claude Code sessions after install (hook config snapshots at startup).
 
-`install` checks for [rtk](https://github.com/rtk-ai/rtk) and installs it when missing —
-downloading the release asset, **SHA-256-verifying it against the release's `checksums.txt`**,
-scanning the archive for absolute/`..` paths, and unpacking to `~/.local/bin`. It then registers
-rtk's own `PreToolUse` hook (`rtk hook claude`, matcher `Bash`) in the same single settings write.
-Without that hook rtk is installed but inert — nothing rewrites your commands, and the dashboard's
-rtk panel stays empty. `ccc install --no-rtk` skips the whole thing; `ccc rtk` does it standalone.
-
-Two deliberate limits: ccc does **not** run `rtk init -g` (that additionally writes `~/.claude/RTK.md`
-and an `@RTK.md` reference into your *global* `CLAUDE.md` — a user-scope change affecting every
-project; run it yourself if you want the instruction files), and it does **not** install ripgrep,
-which needs sudo — it only warns when `rg` is missing. `ccc uninstall` leaves rtk alone; remove it
-with `rtk init -g --uninstall`.
-
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `ccc install [--dry-run] [--no-rtk] [--rtk-version vX.Y.Z]` / `ccc uninstall` | Register/remove statusline + hooks (surgical edits, timestamped backups); installs rtk + its hook unless `--no-rtk` |
-| `ccc rtk [--check] [--force]` | Report rtk binary / hook / ripgrep status; install the binary if missing (`--check` reports only, exit 1 if incomplete) |
+| `ccc install [--dry-run]` / `ccc uninstall` | Register/remove statusline + hooks (surgical edits, timestamped backups) |
 | `ccc prices [--refresh]` | Model rates in use, marked built-in vs auto-resolved (with age); `--refresh` re-reads the published table |
 | `ccc audit [--days N] [--backfill] [--accept] [--json]` | Reconcile ccc's cost math against Anthropic's meter; `--backfill` rebuilds the period from stored samples, `--accept` freezes the current per-model ratios as the drift baseline |
-| `ccc launch --ttl 1h\|5m [--no-rtk] [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
+| `ccc launch --ttl 1h\|5m [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
 | `ccc code [dir] --ttl 1h\|5m` | Same, for VS Code (extension sessions inherit the env) |
 | `ccc daemon start\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
-| `ccc open` | Dashboard (countdown rings, month/today meter + costs, cache economics, tokens-by-tool, rtk verdict) |
+| `ccc open` | Dashboard (countdown rings, month/today meter + costs, cache economics, tokens-by-tool) |
 | `ccc doctor` | Transcript schema-drift canary, TTL observation, daemon health |
 
 The table uses a bare `ccc`, which exists once you `npm link` from the repo root. Without that, prefix
@@ -80,14 +65,11 @@ start** — you cannot change the TTL of a session that is already running. `ccc
 ```sh
 ccc launch --ttl 1h                       # 1-hour prompt cache
 ccc launch --ttl 5m                       # 5-minute prompt cache
-ccc launch --ttl 1h --no-rtk              # ...with rtk's hooks stripped for this session only
 ccc launch --ttl 1h -- --model opus       # everything after `--` is passed through to `claude`
 ```
 
 `ccc launch` runs `claude` in the foreground with your terminal attached, so it behaves exactly like
-typing `claude` yourself. `--no-rtk` copies your settings minus rtk's hook entries to a temp file and
-passes it as `--settings`; it is CLI-only, because the VS Code extension always reads the standard
-settings file.
+typing `claude` yourself.
 
 ### VS Code (extension sessions)
 
@@ -133,6 +115,17 @@ which is the only way to catch a profile that didn't take.
 - **Open in terminal** — the card's **⧉ open** button pops a terminal window in the
   session's cwd running `claude --resume <session>` (Windows Terminal → cmd fallback;
   macOS Terminal; common Linux emulators).
+- **Premium rate tiers are billed as billed** — a transcript's `usage` block reports which
+  speed tier served the request and where inference ran, and both change the bill: fast mode
+  costs $10/$50 per MTok against Opus 5 / 4.8's $5/$25 (caching multipliers stack on top of
+  that, so a 1h write is $20), and `inference_geo: "us"` is 1.1x across every category on
+  Claude 4.6+. Costing a fast-mode session without those reads half of what it cost. Both are
+  taken from what the API reports rather than any local flag, they are applied per turn (a
+  `/fast` toggle mid-session changes the rate from the next turn on), they follow through to
+  every projection (cold re-write, cost/turn, keep-warm break-even), and they are stored per
+  turn so `ccc audit` can tell a rate premium apart from a per-request charge. A fast turn on
+  a model with no published fast rates is billed standard and reported by `ccc doctor` rather
+  than guessed at; `ccc prices` shows which models have a fast tier at all.
 - **Cost visibility** — per-session and per-day $ from transcript usage × date-aware pricing;
   cold re-writes are detected and billed to a weekly "expiry cost you $X" number. The **This month**
   and **Today** tiles read Anthropic's own usage meter (the claude.ai Usage-page number, via the OAuth
@@ -166,6 +159,13 @@ which is the only way to catch a profile that didn't take.
   (that's the CLI's name for these windows) to the daemon; at 80% you get a toast, at 90%
   (configurable, `guardian.action`: `off|notify-only|wrapup|handoff`)
   Claude is told — once — to capture context / update docs / write `HANDOFF.md` and wrap up.
+- **A second opinion on every session's cost** — Claude Code passes its own running total for
+  the session to the statusline (`cost.total_cost_usd`) and nowhere else; the statusline
+  couriers it to the daemon alongside the usage windows. It is kept beside ccc's own
+  transcript-derived figure rather than replacing it: two numbers derived independently from
+  the same session, so a gap between them is the only thing that says either is wrong. The
+  dashboard's session cost hovers to show both and goes amber when they disagree by more than
+  rounding. Sessions with no statusline (the VS Code extension) simply don't report one.
 - **Model rates and cache minimums survive new releases** — a model released after the build
   isn't in the pricing table, so every cost for it reads **$0** until someone edits the code
   (exactly what happened with `claude-opus-5`), and its minimum cacheable prefix falls back to
@@ -182,16 +182,18 @@ which is the only way to catch a profile that didn't take.
   each row's published cache columns against the 1.25x/2x/0.1x multipliers — a mismatch means
   either a misparse or that those constants went stale, and `ccc doctor` says so. Minimums are
   published as a bullet list rather than a table and are validated against the power-of-two
-  shape every real value has. Precedence differs by design: a resolved **rate** loses to the
+  shape every real value has. Fast-mode rates are read too, but only from inside the
+  fast-mode section: the batch table has the same three-column shape and is a 50% discount
+  where fast is a 2x premium, so reading one as the other would invert the error. A "premium"
+  at or below the base rate is refused on that basis alone. Precedence differs by design: a resolved **rate** loses to the
   built-in table (curated entries carry date windows a scrape can't express), while a resolved
   **minimum** wins over the built-in family regexes (an exact per-model figure beats a coarse
   family guess) — and any disagreement is reported so the built-in table can catch up.
   `ccc prices` shows what's built-in vs resolved. These are the only outbound requests to
   platform.claude.com (public pages, unauthenticated, nothing about your usage is sent);
   `pricing.autoResolve: false` disables them.
-- **Tokens by tool + rtk verdict** — per-command token attribution from transcripts
-  (token-exact for single-tool turns), rtk-wrapped vs plain comparison with an n≥20 gate.
-  This measures what `rtk gain` only estimates.
+- **Tokens by tool** — per-command token attribution from transcripts, token-exact for
+  single-tool turns and byte-proportional (flagged as such) for the rest.
 
 ## Config
 
@@ -295,7 +297,7 @@ audio endpoint's spin-up clips the silence instead of the start of the sound.
 ## Development
 
 ```sh
-npm test          # vitest (222 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler, rtk-setup, install-marker, price-docs, price-resolver)
+npm test          # vitest (272 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler, install-marker, price-docs, price-resolver)
 npm run typecheck
 ```
 

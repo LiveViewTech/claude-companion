@@ -217,11 +217,11 @@ describe("dashboard controls (real index.html + controls.js)", () => {
     expect(document.body.classList.contains("view-simple")).toBe(false);
   });
 
-  it("Controls, rtk and Events are collapsible like the analytics sections", () => {
+  it("Controls and Events are collapsible like the analytics sections", () => {
     const summaries = [...document.querySelectorAll(".feed-wrap details.collapsible > summary")].map(
       (s) => s.textContent.trim().split(/\s+/)[0].toLowerCase(),
     );
-    for (const name of ["controls", "rtk", "events"]) expect(summaries).toContain(name);
+    for (const name of ["controls", "events"]) expect(summaries).toContain(name);
     // Controls hosts the card-view toggle, so it must not start collapsed.
     expect(document.getElementById("ctrl-cardview").closest("details").open).toBe(true);
   });

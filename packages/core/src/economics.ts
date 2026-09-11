@@ -1,9 +1,9 @@
-import type { TtlTier, Usage } from "./types.ts";
+import type { RateMods, TtlTier, Usage } from "./types.ts";
 import {
   CACHE_READ_MULT,
   CACHE_WRITE_1H_MULT,
   CACHE_WRITE_5M_MULT,
-  lookupPrice,
+  effectiveRates,
 } from "./pricing.ts";
 
 /**
@@ -14,12 +14,20 @@ export function prefixTokens(usage: Usage): number {
   return usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.input_tokens;
 }
 
+/**
+ * Every projection below quotes the *next* request's price, so it takes the same rate
+ * modifiers the session is currently running under: a session in fast mode pays fast
+ * rates for its next cache write too, and quoting it at standard rates would halve every
+ * re-write warning and break the keep-warm break-even. Omitting `mods` means standard
+ * rates, which is what callers with no session context (a bare model comparison) want.
+ */
+
 /** USD to re-write `prefix` tokens cold at the given tier on the given model. */
-export function rewriteCostUsd(prefix: number, tier: TtlTier, modelId: string): number {
-  const price = lookupPrice(modelId);
-  if (!price) return 0;
+export function rewriteCostUsd(prefix: number, tier: TtlTier, modelId: string, mods?: RateMods): number {
+  const rates = effectiveRates(modelId, mods);
+  if (!rates) return 0;
   const mult = tier === "1h" ? CACHE_WRITE_1H_MULT : CACHE_WRITE_5M_MULT;
-  return (prefix / 1_000_000) * price.inputPerM * mult;
+  return (prefix / 1_000_000) * rates.inputPerM * mult;
 }
 
 /**
@@ -28,18 +36,18 @@ export function rewriteCostUsd(prefix: number, tier: TtlTier, modelId: string): 
  * (0.1x input rate). This is the ambient cost of NOT starting fresh; a new
  * chat pays ~0 of it. Same math as a keep-warm ping minus the output tokens.
  */
-export function prefixTaxUsd(prefix: number, modelId: string): number {
-  const price = lookupPrice(modelId);
-  if (!price) return 0;
-  return (prefix / 1_000_000) * price.inputPerM * CACHE_READ_MULT;
+export function prefixTaxUsd(prefix: number, modelId: string, mods?: RateMods): number {
+  const rates = effectiveRates(modelId, mods);
+  if (!rates) return 0;
+  return (prefix / 1_000_000) * rates.inputPerM * CACHE_READ_MULT;
 }
 
 /** USD for one cache-refreshing ping: prefix read + measured/estimated output. */
-export function pingCostUsd(prefix: number, modelId: string, outputTokens = 200): number {
-  const price = lookupPrice(modelId);
-  if (!price) return 0;
-  const read = (prefix / 1_000_000) * price.inputPerM * CACHE_READ_MULT;
-  const out = (outputTokens / 1_000_000) * price.outputPerM;
+export function pingCostUsd(prefix: number, modelId: string, outputTokens = 200, mods?: RateMods): number {
+  const rates = effectiveRates(modelId, mods);
+  if (!rates) return 0;
+  const read = (prefix / 1_000_000) * rates.inputPerM * CACHE_READ_MULT;
+  const out = (outputTokens / 1_000_000) * rates.outputPerM;
   return read + out;
 }
 
@@ -52,9 +60,15 @@ export interface BreakEven {
   coverageMinutes: number;
 }
 
-export function breakEven(prefix: number, tier: TtlTier, modelId: string, measuredPingOutputTokens = 200): BreakEven {
-  const pingUsd = pingCostUsd(prefix, modelId, measuredPingOutputTokens);
-  const rewriteUsd = rewriteCostUsd(prefix, tier, modelId);
+export function breakEven(
+  prefix: number,
+  tier: TtlTier,
+  modelId: string,
+  measuredPingOutputTokens = 200,
+  mods?: RateMods,
+): BreakEven {
+  const pingUsd = pingCostUsd(prefix, modelId, measuredPingOutputTokens, mods);
+  const rewriteUsd = rewriteCostUsd(prefix, tier, modelId, mods);
   const n = pingUsd > 0 ? rewriteUsd / pingUsd : Infinity;
   const cadenceMin = tier === "1h" ? 55 : 4.5;
   return {
@@ -76,6 +90,6 @@ export function isColdRewrite(usage: Usage, gapSeconds: number, tierBefore: TtlT
 }
 
 /** Cost of switching to `newModel` right now: full prefix re-write at that model's rate. */
-export function modelSwitchCostUsd(prefix: number, tier: TtlTier | null, newModelId: string): number {
-  return rewriteCostUsd(prefix, tier ?? "5m", newModelId);
+export function modelSwitchCostUsd(prefix: number, tier: TtlTier | null, newModelId: string, mods?: RateMods): number {
+  return rewriteCostUsd(prefix, tier ?? "5m", newModelId, mods);
 }

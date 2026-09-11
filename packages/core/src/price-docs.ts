@@ -1,5 +1,5 @@
 import { CACHE_READ_MULT, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT } from "./pricing.ts";
-import type { PriceSpec } from "./types.ts";
+import type { FastRates, PriceSpec } from "./types.ts";
 
 /**
  * Parser for Anthropic's published pricing table, so a newly-released model can be
@@ -35,6 +35,8 @@ export interface ParsedPriceRow {
   displayName: string;
   inputPerM: number;
   outputPerM: number;
+  /** Premium fast-mode rates, when the page's fast-mode table lists this model. */
+  fast?: FastRates;
 }
 
 export interface PriceDocParse {
@@ -113,6 +115,63 @@ function splitRow(line: string): string[] | null {
   return cells;
 }
 
+/**
+ * Fast-mode rates, from the "Fast mode pricing" section of the same page.
+ *
+ * Hazard 1 above cuts both ways: the fast table is three columns, exactly like the batch
+ * table, and batch is a 50% DISCOUNT where fast is a 2x premium — reading one as the other
+ * inverts the error. So this is anchored on the heading and stops at the next one, rather
+ * than matching three-column rows anywhere on the page.
+ *
+ * The model cell lists several models at once ("Claude Opus 5 / Claude Opus 4.8"), which is
+ * why the base-table parser rejects it: the slash survives id normalization. Here the slash
+ * is the delimiter.
+ */
+const FAST_ANCHOR = /^#+\s.*fast mode pricing/i;
+const HEADING = /^#+\s/;
+
+export function parseFastPricing(markdown: string): { fast: Record<string, FastRates>; rejected: number } {
+  const lines = markdown.split("\n");
+  const fast: Record<string, FastRates> = {};
+  let rejected = 0;
+
+  let anchor = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (FAST_ANCHOR.test(lines[i]!)) {
+      anchor = i;
+      break;
+    }
+  }
+  if (anchor === -1) return { fast, rejected };
+
+  for (let i = anchor + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (HEADING.test(line)) break; // next section — the table is behind us
+    const cells = splitRow(line);
+    if (!cells || cells.length !== 3) continue;
+    const input = parsePriceCell(cells[1]!);
+    const output = parsePriceCell(cells[2]!);
+    if (input == null || output == null) continue; // header and separator rows
+    // Same bounds as the base table. Output above input holds on every published row.
+    if (input <= 0 || input > 1000 || output < input || output > 5000) {
+      rejected++;
+      continue;
+    }
+    for (const raw of stripDocMarkup(cells[0]!).split("/")) {
+      const name = raw.trim();
+      if (!name) continue;
+      const id = displayNameToModelId(name);
+      if (!id) {
+        rejected++;
+        continue;
+      }
+      if (!(id in fast)) fast[id] = { inputPerM: input, outputPerM: output };
+    }
+  }
+
+  return { fast, rejected };
+}
+
 export function parsePricingDoc(markdown: string): PriceDocParse {
   const rows: ParsedPriceRow[] = [];
   const multiplierMismatch: string[] = [];
@@ -163,6 +222,22 @@ export function parsePricingDoc(markdown: string): PriceDocParse {
     }
     seen.add(modelId);
     rows.push({ modelId, displayName: cells[0]!.trim(), inputPerM: base, outputPerM: output });
+  }
+
+  // Attach fast-mode rates to the rows they belong to. A "fast" rate at or below the base
+  // rate is not a premium and means we read the wrong table, so it is dropped rather than
+  // applied — that mistake would under-bill every fast turn instead of over-billing it,
+  // which is the harder error to notice.
+  const fastParse = parseFastPricing(markdown);
+  rejected += fastParse.rejected;
+  for (const row of rows) {
+    const f = fastParse.fast[row.modelId];
+    if (!f) continue;
+    if (f.inputPerM <= row.inputPerM || f.outputPerM <= row.outputPerM) {
+      rejected++;
+      continue;
+    }
+    row.fast = f;
   }
 
   return { rows, multiplierMismatch, duplicates, rejected };
@@ -254,7 +329,9 @@ export function specsFor(parse: PriceDocParse, wanted: Iterable<string>): Record
   const want = new Set(wanted);
   const out: Record<string, PriceSpec> = {};
   for (const r of parse.rows) {
-    if (want.has(r.modelId)) out[r.modelId] = { inputPerM: r.inputPerM, outputPerM: r.outputPerM };
+    if (want.has(r.modelId)) {
+      out[r.modelId] = { inputPerM: r.inputPerM, outputPerM: r.outputPerM, ...(r.fast ? { fast: r.fast } : {}) };
+    }
   }
   return out;
 }

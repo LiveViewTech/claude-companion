@@ -127,6 +127,13 @@ function parseUsage(u: Record<string, unknown> | undefined): Usage | undefined {
       ephemeral_1h_input_tokens: num(cc["ephemeral_1h_input_tokens"]),
     };
   }
+  // Premium billing modifiers. Both are what the API reports actually served the request,
+  // and both silently double or 1.1x the bill when ignored. Carried through as raw strings
+  // so an unrecognized value reaches the pricing layer, which reports it.
+  const speed = str(u["speed"]);
+  if (speed !== undefined) usage.speed = speed;
+  const geo = str(u["inference_geo"]);
+  if (geo !== undefined) usage.inference_geo = geo;
   return usage;
 }
 

@@ -153,7 +153,7 @@ export class KeepWarm {
       const warmReturn = turn.usage.cache_read_input_tokens > 0;
       if (warmReturn && state.model) {
         // Without pings the cache would have died: the avoided cold re-write is the win.
-        const avoided = rewriteCostUsd(state.prefixTokens, "5m", state.model);
+        const avoided = rewriteCostUsd(state.prefixTokens, "5m", state.model, state.rateMods);
         state.keepwarm.netSavedUsd += avoided;
         this.onEvent("keepwarm_reconciled", sessionId, { pingsThisIdle, avoidedUsd: avoided });
       }
@@ -170,7 +170,9 @@ export class KeepWarm {
     const state = this.tracker.get(sessionId);
     if (!state?.model || !state.ttlTier) return null;
     const measured = this.medianPingOutput(sessionId);
-    return breakEven(state.prefixTokens, state.ttlTier, state.model, measured ?? 200);
+    // At the session's own rates: in fast mode both the ping and the re-write it avoids
+    // cost 2x, and quoting either at standard rates would misprice the trade.
+    return breakEven(state.prefixTokens, state.ttlTier, state.model, measured ?? 200, state.rateMods);
   }
 
   private medianPingOutput(sessionId: string): number | null {
@@ -185,6 +187,6 @@ export class KeepWarm {
   pingCostFor(sessionId: string): number | null {
     const state = this.tracker.get(sessionId);
     if (!state?.model) return null;
-    return pingCostUsd(state.prefixTokens, state.model, this.medianPingOutput(sessionId) ?? 200);
+    return pingCostUsd(state.prefixTokens, state.model, this.medianPingOutput(sessionId) ?? 200, state.rateMods);
   }
 }

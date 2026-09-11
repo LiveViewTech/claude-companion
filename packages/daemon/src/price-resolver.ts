@@ -9,6 +9,7 @@ import {
   registerResolvedCacheMinimums,
   registerResolvedPrices,
   specsFor,
+  type FastRates,
   type PriceSpec,
 } from "@ccc/core";
 
@@ -84,6 +85,29 @@ export function priceCacheFile(): string {
   return path.join(appPaths().state, CACHE_FILE);
 }
 
+/**
+ * Fast-mode rates survive a cache round-trip only if they still look like a premium.
+ * Absent is the normal case (most models have no fast tier); a "premium" at or below the
+ * base rate is a corrupted or hand-edited entry, and dropping it costs a fast turn at
+ * standard rates instead of billing it at a rate nobody published.
+ */
+function validFast(fast: unknown, inputPerM: number, outputPerM: number): FastRates | undefined {
+  const f = fast as Partial<FastRates> | undefined;
+  if (!f || typeof f.inputPerM !== "number" || typeof f.outputPerM !== "number") return undefined;
+  if (!Number.isFinite(f.inputPerM) || !Number.isFinite(f.outputPerM)) return undefined;
+  if (f.inputPerM <= inputPerM || f.outputPerM <= outputPerM) return undefined;
+  return { inputPerM: f.inputPerM, outputPerM: f.outputPerM };
+}
+
+function fmtFast(f: FastRates | undefined): string {
+  return f ? `${f.inputPerM}/${f.outputPerM}` : "none";
+}
+
+/** The core-facing half of a cache entry (drops provenance). */
+function specOf(e: ResolvedEntry): PriceSpec {
+  return { inputPerM: e.inputPerM, outputPerM: e.outputPerM, ...(e.fast ? { fast: e.fast } : {}) };
+}
+
 export function loadPriceCache(file = priceCacheFile()): PriceCache {
   try {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<PriceCache>;
@@ -102,9 +126,11 @@ export function loadPriceCache(file = priceCacheFile()): PriceCache {
         entry.inputPerM > 0 &&
         entry.outputPerM > 0
       ) {
+        const fast = validFast(entry.fast, entry.inputPerM, entry.outputPerM);
         entries[id] = {
           inputPerM: entry.inputPerM,
           outputPerM: entry.outputPerM,
+          ...(fast ? { fast } : {}),
           displayName: typeof entry.displayName === "string" ? entry.displayName : id,
           resolvedAt: typeof entry.resolvedAt === "number" ? entry.resolvedAt : 0,
           source: typeof entry.source === "string" ? entry.source : PRICING_DOC_URL,
@@ -144,9 +170,7 @@ export function loadPriceCache(file = priceCacheFile()): PriceCache {
 export function applyCachedPrices(file = priceCacheFile()): PriceCache {
   const cache = loadPriceCache(file);
   const specs: Record<string, PriceSpec> = {};
-  for (const [id, e] of Object.entries(cache.entries)) {
-    specs[id] = { inputPerM: e.inputPerM, outputPerM: e.outputPerM };
-  }
+  for (const [id, e] of Object.entries(cache.entries)) specs[id] = specOf(e);
   if (Object.keys(specs).length > 0) registerResolvedPrices(specs);
   if (Object.keys(cache.cacheMinimums).length > 0) registerResolvedCacheMinimums(cache.cacheMinimums);
   return cache;
@@ -197,9 +221,7 @@ export class PriceResolver {
   /** Push cached rates and minimums into core so the lookups can serve them. */
   private applyToCore(): void {
     const specs: Record<string, PriceSpec> = {};
-    for (const [id, e] of Object.entries(this.cache.entries)) {
-      specs[id] = { inputPerM: e.inputPerM, outputPerM: e.outputPerM };
-    }
+    for (const [id, e] of Object.entries(this.cache.entries)) specs[id] = specOf(e);
     if (Object.keys(specs).length > 0) registerResolvedPrices(specs);
     if (Object.keys(this.cache.cacheMinimums).length > 0) {
       registerResolvedCacheMinimums(this.cache.cacheMinimums);
@@ -369,6 +391,8 @@ export class PriceResolver {
       if (!prev) added.push(id);
       else if (prev.inputPerM !== spec.inputPerM || prev.outputPerM !== spec.outputPerM) {
         changed.push(`${id} ${prev.inputPerM}/${prev.outputPerM} -> ${spec.inputPerM}/${spec.outputPerM}`);
+      } else if (fmtFast(prev.fast) !== fmtFast(spec.fast)) {
+        changed.push(`${id} fast ${fmtFast(prev.fast)} -> ${fmtFast(spec.fast)}`);
       }
       this.cache.entries[id] = {
         ...spec,

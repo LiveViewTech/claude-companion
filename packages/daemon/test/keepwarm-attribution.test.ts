@@ -193,6 +193,5 @@ describe("Attribution", () => {
     const stats = classStats(store);
     expect(stats[0]!.commandClass).toBe("git status");
     expect(stats[0]!.medianChars).toBe(8000);
-    expect(stats[0]!.rtkWrapped).toBe(false);
   });
 });

@@ -310,7 +310,18 @@ function fillCard(card, s) {
   const tier = card.querySelector(".tier");
   tier.textContent = s.ttlTier ? `${s.ttlTier} TTL` : "TTL ?";
   tier.className = `badge tier ${s.ttlTier ? `tier-${s.ttlTier}` : ""}`;
-  card.querySelector(".cost").textContent = usd(s.sessionCostUsd);
+  // Claude Code's own total, when a statusline render has couriered one, hangs off the
+  // hover: two independently-derived numbers for the same session, so a gap between them
+  // is the one thing that says either is wrong.
+  const costEl = card.querySelector(".cost");
+  costEl.textContent = usd(s.sessionCostUsd);
+  const official = typeof s.officialCostUsd === "number" ? s.officialCostUsd : null;
+  costEl.title =
+    official === null
+      ? ""
+      : `Claude Code's own total: ${usd(official)} (ccc: ${usd(s.sessionCostUsd)}, ` +
+        `difference ${usd(Math.abs(official - s.sessionCostUsd))})`;
+  costEl.classList.toggle("drift", official !== null && Math.abs(official - s.sessionCostUsd) > Math.max(0.05, official * 0.1));
 
   // "Start fresh?" indicator: what it costs to carry this context each turn.
   const tax = Number(s.prefixTaxUsd || 0);
@@ -394,10 +405,9 @@ function fillCard(card, s) {
 
 async function refreshAnalytics() {
   try {
-    const [habits, tools, rtk, audit] = await Promise.all([
+    const [habits, tools, audit] = await Promise.all([
       fetch("/api/habits").then((r) => r.json()),
       fetch("/api/tools").then((r) => r.json()),
-      fetch("/api/rtk").then((r) => r.json()),
       // 404s with {error} when auditing is off; renderAudit then hides the panel.
       fetch("/api/audit?days=14").then((r) => r.json()),
     ]);
@@ -422,7 +432,6 @@ async function refreshAnalytics() {
       tools.leaderboard.map((t) => [esc(t.tool), String(t.calls), fmtN(t.chars), fmtN(Math.round(t.tokEst)), fmtN(t.tokExact)]),
       [1, 2, 3, 4],
     );
-    renderRtkGain(rtk.gain);
     renderAudit(audit);
   } catch {
     /* daemon down */
@@ -552,25 +561,6 @@ function row(label, value, aside, tip) {
   return `<dt${t}>${label}</dt><dd${t}>${value}</dd><dd class="aside"${t}>${aside ? esc(aside) : ""}</dd>`;
 }
 
-
-/** rtk's OWN measured savings (ground truth). The transcript can't see
-    hook-rewritten commands, so this bar is the real "is rtk working?" signal. */
-function renderRtkGain(gain) {
-  const el = document.getElementById("rtk-gain");
-  if (!el) return;
-  if (!gain || !gain.available || !gain.totalCommands) {
-    const why = gain && gain.reason ? ` — ${esc(gain.reason)}` : "";
-    el.innerHTML = `<span class="rtk-off">rtk not measured yet${why}.</span> <span class="soft">Once the rtk hook is active and has wrapped some commands, its savings show here.</span>`;
-    return;
-  }
-  const pct = Math.max(0, Math.min(100, Math.round(gain.avgSavingsPct)));
-  el.innerHTML =
-    `<div class="rtk-line"><span class="rtk-ok">✓ rtk running</span>` +
-    `<span class="rtk-stat"><b>${fmtN(gain.totalCommands)}</b> commands wrapped</span>` +
-    `<span class="rtk-stat"><b>${kTok(gain.tokensSaved)}</b> saved</span>` +
-    `<span class="rtk-stat"><b>${pct}%</b> avg</span></div>` +
-    `<div class="rtk-bar"><div class="rtk-fill" style="width:${pct}%"></div></div>`;
-}
 
 /** Update countdown ring + text from data-expires-at. Runs every second. */
 function tick(card) {

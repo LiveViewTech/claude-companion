@@ -50,8 +50,7 @@ export class Store {
         started_ts INTEGER,
         last_ts INTEGER,
         last_model TEXT,
-        billing_tier_last TEXT,
-        rtk_detected INTEGER DEFAULT 0
+        billing_tier_last TEXT
       );
       CREATE TABLE IF NOT EXISTS audit_windows (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +94,6 @@ export class Store {
         tool_name TEXT NOT NULL,
         command TEXT,
         command_class TEXT,
-        rtk_wrapped INTEGER NOT NULL DEFAULT 0,
         result_chars INTEGER,
         result_tok_exact INTEGER,
         attribution TEXT
@@ -140,6 +138,12 @@ export class Store {
     this.addColumn("sessions", "name", "TEXT");
     this.addColumn("sessions", "name_desc", "TEXT");
     this.addColumn("sessions", "name_prompts", "INTEGER DEFAULT 0");
+    // Premium billing modifiers, per turn: `usage.speed` ("fast" bills 2x on Opus 5/4.8)
+    // and `usage.inference_geo` ("us" bills 1.1x). Stored alongside the tokens so the
+    // audit can tell a rate premium apart from a per-request charge instead of inferring
+    // it from the shortfall's shape.
+    this.addColumn("turns", "speed", "TEXT");
+    this.addColumn("turns", "geo", "TEXT");
   }
 
   private addColumn(table: string, column: string, decl: string): void {
@@ -185,12 +189,15 @@ export class Store {
     costUsd: number;
     prefixTok: number;
     isSidechain: boolean;
+    /** Transcript `usage.speed` / `usage.inference_geo`, verbatim when reported. */
+    speed?: string;
+    geo?: string;
   }): boolean {
     const res = this.db
       .prepare(
         `INSERT OR IGNORE INTO turns
-         (uuid, session_id, ts, model, input_tok, output_tok, cache_read_tok, cache_w5_tok, cache_w1h_tok, cost_usd, prefix_tok, is_sidechain)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (uuid, session_id, ts, model, input_tok, output_tok, cache_read_tok, cache_w5_tok, cache_w1h_tok, cost_usd, prefix_tok, is_sidechain, speed, geo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         t.uuid,
@@ -205,6 +212,8 @@ export class Store {
         t.costUsd,
         t.prefixTok,
         t.isSidechain ? 1 : 0,
+        t.speed ?? null,
+        t.geo ?? null,
       );
     return res.changes > 0;
   }
@@ -217,14 +226,13 @@ export class Store {
     toolName: string;
     command?: string;
     commandClass?: string;
-    rtkWrapped: boolean;
   }): void {
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO tool_calls (tool_use_id, session_id, turn_uuid, ts, tool_name, command, command_class, rtk_wrapped)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO tool_calls (tool_use_id, session_id, turn_uuid, ts, tool_name, command, command_class)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(c.toolUseId, c.sessionId, c.turnUuid, c.ts, c.toolName, c.command ?? null, c.commandClass ?? null, c.rtkWrapped ? 1 : 0);
+      .run(c.toolUseId, c.sessionId, c.turnUuid, c.ts, c.toolName, c.command ?? null, c.commandClass ?? null);
   }
 
   /** Persist an LLM-generated session name. `promptCount` = prompts seen when named (rename watermark). */

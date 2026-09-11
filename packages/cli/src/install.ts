@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeSettingsPath } from "@ccc/core";
-import { ensureRtkBinary, rtkHookEntry, rtkStatus } from "./rtk-setup.ts";
 
 /**
  * Surgical settings.json editor: registers our statusline + hooks, preserving
@@ -83,10 +82,6 @@ export function isOurs(cmd: string): boolean {
 
 export interface InstallOptions {
   dryRun?: boolean;
-  /** Skip the rtk check/install entirely (same flag name as `ccc launch --no-rtk`). */
-  noRtk?: boolean;
-  /** Pin the rtk release instead of resolving the latest. */
-  rtkVersion?: string;
 }
 
 export async function install(opts: InstallOptions = {}): Promise<number> {
@@ -99,23 +94,6 @@ export async function install(opts: InstallOptions = {}): Promise<number> {
     if (fs.existsSync(settingsPath)) {
       console.error(`refusing to touch unparseable settings: ${settingsPath} (${(e as Error).message})`);
       return 1;
-    }
-  }
-
-  // rtk first: the binary must exist on PATH before its hook is worth registering.
-  // Network work, so it happens before we start staging settings edits.
-  let rtkPresent = false;
-  if (opts.noRtk) {
-    console.log("rtk: skipped (--no-rtk).");
-  } else {
-    const res = await ensureRtkBinary({ dryRun, version: opts.rtkVersion });
-    rtkPresent = res.installed;
-    if (!rtkPresent && dryRun) rtkPresent = rtkStatus().installed;
-    if (!rtkPresent && !dryRun) {
-      console.log("rtk: unavailable — continuing without the rtk hook (ccc works fine without it).");
-    }
-    if (rtkPresent && !rtkStatus().ripgrep) {
-      console.log("rtk: note — ripgrep (rg) is missing; some rtk filters shell out to it. Install it with your package manager.");
     }
   }
 
@@ -142,13 +120,6 @@ export async function install(opts: InstallOptions = {}): Promise<number> {
   // alongside keep-warm on Stop — is added rather than mistaken for already-present.
   const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
   const desired = desiredHooks();
-  // rtk's hook is NOT ccc-marked: it carries no CCC_MARKER, so `ccc uninstall`
-  // leaves it in place (it isn't ours to remove — `rtk init -g --uninstall` owns
-  // that). Dedup is by exact command string, so a hook already registered by
-  // `rtk init -g` is recognized rather than duplicated.
-  if (rtkPresent) {
-    desired.push({ event: "PreToolUse", entry: rtkHookEntry(), label: "rtk auto-rewrite" });
-  }
   for (const { event, entry, label } of desired) {
     const list = hooks[event] ?? [];
     const cmd = entry.hooks[0]!.command;

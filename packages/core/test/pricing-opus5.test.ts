@@ -18,16 +18,16 @@ import type { Usage } from "../src/types.ts";
  */
 describe("claude-opus-5 pricing", () => {
   it("is in the table at the published base rates", () => {
-    expect(lookupPrice("claude-opus-5")).toEqual({ inputPerM: 5, outputPerM: 25 });
+    expect(lookupPrice("claude-opus-5")).toMatchObject({ inputPerM: 5, outputPerM: 25 });
   });
 
   it("resolves through the [1m] context-window suffix", () => {
     // The session model id is literally "claude-opus-5[1m]".
-    expect(lookupPrice("claude-opus-5[1m]")).toEqual({ inputPerM: 5, outputPerM: 25 });
+    expect(lookupPrice("claude-opus-5[1m]")).toMatchObject({ inputPerM: 5, outputPerM: 25 });
   });
 
   it("resolves the Bedrock-prefixed id", () => {
-    expect(lookupPrice("anthropic.claude-opus-5")).toEqual({ inputPerM: 5, outputPerM: 25 });
+    expect(lookupPrice("anthropic.claude-opus-5")).toMatchObject({ inputPerM: 5, outputPerM: 25 });
   });
 
   it("derives the published per-model cache columns from the multipliers", () => {

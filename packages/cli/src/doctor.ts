@@ -3,7 +3,6 @@ import path from "node:path";
 import { appPaths, claudeProjectsDir, parseLine, ttlTierOf, turnCost } from "@ccc/core";
 import { loadConfig } from "@ccc/daemon/config";
 import { applyCachedPrices } from "@ccc/daemon/price-resolver";
-import { rtkStatus } from "./rtk-setup.ts";
 
 /**
  * Schema-drift canary + health check:
@@ -31,6 +30,10 @@ export async function doctor(): Promise<number> {
   let assistantWithUsage = 0;
   let withEphemeral = 0;
   let unknownModels = new Set<string>();
+  const unpricedFast = new Set<string>();
+  const unknownGeos = new Set<string>();
+  let fastTurns = 0;
+  let usGeoTurns = 0;
   let tier5m = 0;
   let tier1h = 0;
   let ccVersion: string | undefined;
@@ -53,8 +56,13 @@ export async function doctor(): Promise<number> {
         const tier = ttlTierOf(entry.usage);
         if (tier === "5m") tier5m++;
         if (tier === "1h") tier1h++;
-        if (entry.model && turnCost(entry.usage, entry.model, entry.timestamp).unknownModel) {
-          unknownModels.add(entry.model);
+        if (entry.usage.speed === "fast") fastTurns++;
+        if (entry.usage.inference_geo === "us") usGeoTurns++;
+        if (entry.model) {
+          const cost = turnCost(entry.usage, entry.model, entry.timestamp);
+          if (cost.unknownModel) unknownModels.add(entry.model);
+          if (cost.unpricedFastMode) unpricedFast.add(entry.model);
+          if (cost.unknownGeo && entry.usage.inference_geo) unknownGeos.add(entry.usage.inference_geo);
         }
       }
     }
@@ -65,6 +73,22 @@ export async function doctor(): Promise<number> {
   console.log(`entry kinds: ${JSON.stringify(counts)}`);
   console.log(`assistant turns with usage: ${assistantWithUsage} (ephemeral TTL breakdown present: ${withEphemeral})`);
   console.log(`ttl writes observed — 5m: ${tier5m}, 1h: ${tier1h}`);
+  if (fastTurns > 0 || usGeoTurns > 0) {
+    console.log(`premium turns — fast mode: ${fastTurns}, US-only inference: ${usGeoTurns} (billed at 2x / 1.1x)`);
+  }
+  if (unpricedFast.size > 0) {
+    // Under-billing, and silent without this: the turn costs 2x and ccc quotes 1x.
+    console.log(
+      `⚠ fast-mode turns on models with no fast rates: ${[...unpricedFast].join(", ")} — ` +
+        "billed at standard rates here, so these sessions read low (run: ccc prices --refresh)",
+    );
+  }
+  if (unknownGeos.size > 0) {
+    console.log(
+      `⚠ unrecognized inference_geo: ${[...unknownGeos].join(", ")} — costed at standard rates; ` +
+        "only \"global\" and \"us\" (1.1x) have published multipliers",
+    );
+  }
   if (unknownModels.size > 0) {
     console.log(`⚠ models missing from pricing table: ${[...unknownModels].join(", ")} — costs for these read $0`);
     console.log(
@@ -110,17 +134,6 @@ export async function doctor(): Promise<number> {
   if (assistantWithUsage > 0 && withEphemeral === 0) {
     console.log("⚠ SCHEMA DRIFT: usage.cache_creation breakdown missing — TTL tier detection degraded to config guessing");
     ok = false;
-  }
-
-  // rtk: the dashboard's rtk panel is fed by `rtk gain`, which reports nothing at
-  // all when rtk is absent — so surface it here rather than leaving an empty tile.
-  const rtk = rtkStatus();
-  if (!rtk.installed) {
-    console.log("rtk: not on PATH — no command-output compression (run: ccc rtk)");
-  } else if (!rtk.hookRegistered) {
-    console.log(`rtk: ${rtk.version} installed but no PreToolUse hook — commands are NOT rewritten (run: ccc install)`);
-  } else {
-    console.log(`rtk: ${rtk.version}, hook registered${rtk.ripgrep ? "" : " (⚠ ripgrep missing — some filters need rg)"}`);
   }
 
   // Daemon health

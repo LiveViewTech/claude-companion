@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayNameToModelId, parseCacheMinimums, parsePricingDoc, specsFor } from "../src/price-docs.ts";
+import { displayNameToModelId, parseCacheMinimums, parseFastPricing, parsePricingDoc, specsFor } from "../src/price-docs.ts";
 import {
   builtInCacheMinimum,
   clearResolvedCacheMinimums,
@@ -280,10 +280,53 @@ describe("minCacheablePrefix overlay", () => {
   });
 });
 
+describe("parseFastPricing", () => {
+  it("reads the fast table and splits its combined model cell", () => {
+    const { fast } = parseFastPricing(DOC);
+    expect(fast).toEqual({
+      "claude-opus-5": { inputPerM: 10, outputPerM: 50 },
+      "claude-opus-4-8": { inputPerM: 10, outputPerM: 50 },
+    });
+  });
+
+  it("stops at the next heading, so the batch table is never read as a premium", () => {
+    // Batch is three columns too, and a 50% DISCOUNT: reading it here would bill fast
+    // turns at half rate instead of double. Haiku only appears in the batch table.
+    const { fast } = parseFastPricing(DOC);
+    expect(fast["claude-haiku-4-5"]).toBeUndefined();
+  });
+
+  it("finds nothing on a page with no fast-mode section", () => {
+    expect(parseFastPricing("# Pricing\n\n| a | b | c |\n| $1 / MTok | $2 / MTok | $3 / MTok |").fast).toEqual({});
+  });
+
+  it("refuses a fast rate that is not above the base rate", () => {
+    // Same shape as the real page but with the batch figures under the fast heading.
+    const doc = DOC.replace("| Claude Opus 5 / Claude Opus 4.8 | $10 / MTok | $50 / MTok |", "| Claude Opus 5 | $2.50 / MTok | $12.50 / MTok |");
+    const parse = parsePricingDoc(doc);
+    const row = parse.rows.find((r) => r.modelId === "claude-opus-5");
+    expect(row?.inputPerM).toBe(5); // base row intact
+    expect(row?.fast).toBeUndefined();
+  });
+
+  it("attaches fast rates to the base row they belong to", () => {
+    const parse = parsePricingDoc(DOC);
+    const byId = new Map(parse.rows.map((r) => [r.modelId, r]));
+    expect(byId.get("claude-opus-5")?.fast).toEqual({ inputPerM: 10, outputPerM: 50 });
+    expect(byId.get("claude-opus-4-8")?.fast).toEqual({ inputPerM: 10, outputPerM: 50 });
+    // Fable 5 is on the page but has no fast tier.
+    expect(byId.get("claude-fable-5")?.fast).toBeUndefined();
+  });
+});
+
 describe("specsFor + overlay precedence", () => {
   it("narrows a parse to the requested ids", () => {
     const specs = specsFor(parsePricingDoc(DOC), ["claude-opus-5", "claude-nonexistent-9"]);
-    expect(specs).toEqual({ "claude-opus-5": { inputPerM: 5, outputPerM: 25 } });
+    // Base rates from the 6-column table, fast rates from the fast-mode section — both
+    // belong to the same spec, and the base pair is still the one costing a standard turn.
+    expect(specs).toEqual({
+      "claude-opus-5": { inputPerM: 5, outputPerM: 25, fast: { inputPerM: 10, outputPerM: 50 } },
+    });
   });
 
   it("prices a model the built-in table has never heard of", () => {

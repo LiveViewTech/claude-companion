@@ -12,6 +12,18 @@ export interface Usage {
     ephemeral_5m_input_tokens?: number;
     ephemeral_1h_input_tokens?: number;
   };
+  /**
+   * Which speed tier actually served the request ("standard" | "fast"), as reported by
+   * the API rather than requested by the client. Fast mode bills input and output at a
+   * premium (Opus 5 / 4.8: $10/$50 against $5/$25), so a turn costed without this reads
+   * half of what it cost. Kept as a bare string: an unrecognized tier must not throw.
+   */
+  speed?: string;
+  /**
+   * Where inference ran ("global" | "us"). US-only inference bills 1.1x across every
+   * category on Claude 4.6+. Also a bare string, for the same reason.
+   */
+  inference_geo?: string;
 }
 
 export interface ToolUse {
@@ -96,6 +108,12 @@ export interface SessionState {
   nameDescription?: string;
   /** TTL tier of the most recent cache write. */
   ttlTier: TtlTier | null;
+  /**
+   * Premium billing modifiers seen on the latest turn. Every forward-looking projection
+   * (re-write cost, prefix tax, keep-warm break-even) is quoted at these rates, because a
+   * session running fast mode pays the fast rate for its next cache write too.
+   */
+  rateMods: RateMods;
   /** Epoch ms when the cache expires (last activity + TTL). Null when unknown. */
   expiresAt: number | null;
   /** Epoch ms of the last assistant turn with usage. */
@@ -106,6 +124,16 @@ export interface SessionState {
   rewriteCostUsd: number;
   /** Cumulative session cost, USD (computed from transcript usage). */
   sessionCostUsd: number;
+  /**
+   * Claude Code's own running total for this session, couriered by the statusline from
+   * its stdin `cost.total_cost_usd`. A second, independently-derived figure for the same
+   * session: a persistent gap against `sessionCostUsd` means one of the two is wrong,
+   * which no amount of internal consistency would reveal. Null until a statusline render
+   * reports it (VS Code sessions have no statusline, so it stays null there).
+   */
+  officialCostUsd: number | null;
+  /** Epoch ms the official cost was couriered. */
+  officialCostAt: number | null;
   turns: number;
   /** Cost of switching to each candidate model right now (cache re-write), USD. */
   modelSwitchCostUsd: Record<string, number>;
@@ -145,4 +173,32 @@ export interface PriceSpec {
   /** Validity window (ISO dates, inclusive start, exclusive end). */
   from?: string;
   until?: string;
+  /**
+   * Fast-mode rates, on the models that have a fast tier at all. Absent means asking for
+   * fast rates falls back to standard, which is right two ways: most models have no fast
+   * tier (Opus 4.6 silently runs standard and bills standard, Opus 4.7 errors), and
+   * inventing a premium we can't source would overstate the bill.
+   *
+   * Cache columns are deliberately not stored: the published multipliers (1.25x / 2x / 0.1x)
+   * apply on top of fast rates, so deriving them keeps one source of truth.
+   */
+  fast?: FastRates;
+}
+
+/** Premium input/output rates for fast mode, USD per million tokens. */
+export interface FastRates {
+  inputPerM: number;
+  outputPerM: number;
+}
+
+/**
+ * Per-request billing modifiers, straight off a transcript `usage` block. Both are
+ * reported by the API (what actually served the request), not requested by the client,
+ * so they are the right thing to bill against.
+ */
+export interface RateMods {
+  /** `usage.speed`: "fast" bills the premium tier on models that have one. */
+  speed?: string;
+  /** `usage.inference_geo`: "us" bills 1.1x across every category. */
+  geo?: string;
 }

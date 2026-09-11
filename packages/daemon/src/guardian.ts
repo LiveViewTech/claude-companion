@@ -15,7 +15,10 @@ interface CourierPayload {
   ts: number;
   // `rate_limits` is Claude Code's own name for these usage windows in the statusline
   // stdin JSON; the courier passes the field through verbatim, so the key is kept as-is.
-  rate_limits: { five_hour?: UsageLimitWindow; seven_day?: UsageLimitWindow };
+  // Optional: an API-key seat has no usage windows but still reports a cost.
+  rate_limits?: { five_hour?: UsageLimitWindow; seven_day?: UsageLimitWindow };
+  /** Claude Code's own running total for the session, from stdin `cost.total_cost_usd`. */
+  cost_usd?: number;
 }
 
 export interface GuardianNotification {
@@ -31,6 +34,10 @@ export interface GuardianNotification {
  * Usage-limit guardian: consumes the official `rate_limits` field couriered by the statusline,
  * updates session state, and — at configured thresholds — raises notifications
  * and arms a ONE-SHOT wrap-up/handoff instruction for the hooks to deliver.
+ *
+ * It also owns the courier channel itself, so the sweep hands the other stdin-only field
+ * it carries — Claude Code's own session cost — to the tracker. That is a pass-through,
+ * not guardian policy: nothing here reads or acts on the number.
  *
  * One-shot keying: (session, window, resets_at, level). A new reset window
  * re-arms; the same window never fires twice (persisted in the meta table so
@@ -79,7 +86,7 @@ export class Guardian {
         ...(usage.sevenDay ? { seven_day: { used_percentage: usage.sevenDay.utilization, resets_at: isoToUnixSeconds(usage.sevenDay.resetsAt) } } : {}),
       },
     };
-    if (!payload.rate_limits.five_hour && !payload.rate_limits.seven_day) return [];
+    if (!payload.rate_limits?.five_hour && !payload.rate_limits?.seven_day) return [];
     const changed: SessionState[] = [];
     const cutoff = Date.now() - Guardian.ACCOUNT_APPLY_WINDOW_MS;
     for (const state of this.tracker.all) {
@@ -109,6 +116,11 @@ export class Guardian {
       } catch {
         continue;
       }
+      if (typeof payload.cost_usd === "number") {
+        const updated = this.tracker.applyOfficialCost(sessionId, payload.cost_usd, payload.ts);
+        if (updated) changed.push(updated);
+      }
+      if (!payload.rate_limits) continue;
       if (state.guardian.updatedAt != null && payload.ts <= state.guardian.updatedAt) continue;
       // Courier is the only window source on subscription seats without OAuth
       // windows — sample here (not in apply(), which the OAuth path also uses).
@@ -120,7 +132,7 @@ export class Guardian {
 
   private sampleCourier(payload: CourierPayload): void {
     if (!this.sampler) return;
-    for (const [name, w] of [["five_hour", payload.rate_limits.five_hour], ["seven_day", payload.rate_limits.seven_day]] as const) {
+    for (const [name, w] of [["five_hour", payload.rate_limits?.five_hour], ["seven_day", payload.rate_limits?.seven_day]] as const) {
       if (w?.used_percentage == null) continue;
       const resetsAt = w.resets_at != null ? new Date(w.resets_at * 1000).toISOString() : null;
       this.sampler.observe({ window: name, utilization: w.used_percentage, resetsAt, source: "courier" });
@@ -129,8 +141,8 @@ export class Guardian {
 
   private apply(state: SessionState, payload: CourierPayload): boolean {
     const g = state.guardian;
-    const fh = payload.rate_limits.five_hour;
-    const sd = payload.rate_limits.seven_day;
+    const fh = payload.rate_limits?.five_hour;
+    const sd = payload.rate_limits?.seven_day;
     g.fiveHourPct = fh?.used_percentage ?? g.fiveHourPct;
     g.sevenDayPct = sd?.used_percentage ?? g.sevenDayPct;
     g.fiveHourResetsAt = fh?.resets_at ?? g.fiveHourResetsAt;

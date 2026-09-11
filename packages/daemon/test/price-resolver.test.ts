@@ -62,6 +62,57 @@ afterEach(() => {
   clearResolvedCacheMinimums();
 });
 
+/** Same shape as the real page: base table, then a fast-mode section below it. */
+const DOC_WITH_FAST = `${DOC}
+### Fast mode pricing
+
+| Model | Input | Output |
+| Claude Opus 7 | $14 / MTok | $70 / MTok |
+`;
+
+describe("PriceResolver fast-mode rates", () => {
+  it("resolves, persists and re-registers a model's fast rates", async () => {
+    const r = new PriceResolver({ enabled: true, refreshDays: 7, fetchFn: okFetch(DOC_WITH_FAST), cacheFile });
+    r.noteModel("claude-opus-7");
+    await r.resolve();
+
+    expect(lookupPrice("claude-opus-7")).toEqual({
+      inputPerM: 7,
+      outputPerM: 35,
+      fast: { inputPerM: 14, outputPerM: 70 },
+    });
+    expect(loadPriceCache(cacheFile).entries["claude-opus-7"]).toMatchObject({ fast: { inputPerM: 14, outputPerM: 70 } });
+
+    // Survives the process boundary: a fresh load must re-register the premium, or a
+    // fast turn on a resolved model gets billed at half rate after every restart.
+    clearResolvedPrices();
+    applyCachedPrices(cacheFile);
+    expect(lookupPrice("claude-opus-7")?.fast).toEqual({ inputPerM: 14, outputPerM: 70 });
+  });
+
+  it("drops a cached fast rate that is not above the base rate", () => {
+    fs.writeFileSync(
+      cacheFile,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "claude-opus-7": {
+            inputPerM: 7,
+            outputPerM: 35,
+            fast: { inputPerM: 3.5, outputPerM: 17.5 }, // the batch rates, not fast
+            displayName: "Claude Opus 7",
+            resolvedAt: 1,
+            source: "x",
+          },
+        },
+      }),
+    );
+    applyCachedPrices(cacheFile);
+    const p = lookupPrice("claude-opus-7");
+    expect(p).toEqual({ inputPerM: 7, outputPerM: 35 }); // base kept, bogus premium dropped
+  });
+});
+
 describe("PriceResolver", () => {
   it("prices a model the built-in table doesn't know, and persists it", async () => {
     expect(lookupPrice("claude-opus-7")).toBeNull();

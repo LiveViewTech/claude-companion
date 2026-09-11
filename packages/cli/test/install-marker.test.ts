@@ -24,7 +24,7 @@ describe("isOurs", () => {
     expect(isOurs("node /home/dev/other-tool/statusline.js")).toBe(false);
   });
 
-  it("does not claim rtk's hook", () => {
-    expect(isOurs("rtk hook claude")).toBe(false);
+  it("does not claim another tool's hook", () => {
+    expect(isOurs("some-other-tool hook claude")).toBe(false);
   });
 });

@@ -39,7 +39,7 @@ export async function prices(args: string[]): Promise<number> {
     `last fetch: ${cache.lastFetchAt ? new Date(cache.lastFetchAt).toISOString() : "never"}`,
   );
   console.log();
-  console.log("model                     in$/M   out$/M   min-cache   source");
+  console.log("model                     in$/M   out$/M   fast in/out   min-cache   source");
   for (const id of ids) {
     const p = lookupPrice(id);
     if (!p) continue;
@@ -47,9 +47,12 @@ export async function prices(args: string[]): Promise<number> {
     // "*" marks a minimum taken from the published page over the built-in family guess.
     const min = minCacheablePrefix(id);
     const minMark = min !== builtInCacheMinimum(id) ? "*" : " ";
+    // Fast mode exists on two models; "—" everywhere else is the answer to "why is my
+    // fast session costed at standard rates".
+    const fast = p.fast ? `${p.fast.inputPerM}/${p.fast.outputPerM}` : "—";
     console.log(
       `${id.padEnd(24)} ${String(p.inputPerM).padStart(6)}  ${String(p.outputPerM).padStart(7)}  ` +
-        `${String(min).padStart(8)}${minMark}   ${src}`,
+        `${fast.padStart(11)}   ${String(min).padStart(8)}${minMark}   ${src}`,
     );
   }
 

@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // Claude Code statusline for claude-companion.
 // Dependency-free and fast: stdin JSON + daemon-written state file -> one ANSI line.
-// Also acts as the *usage-limits courier*: the plan usage windows (5h/7d) only exist in this
-// stdin JSON — Claude Code names the field `rate_limits` — so we persist them for the daemon (guardian, M3).
+// Also acts as the *courier* for the two numbers that exist ONLY in this stdin JSON and
+// nowhere in the transcripts: the plan usage windows (Claude Code names the field
+// `rate_limits`) and Claude Code's own running session cost (`cost.total_cost_usd`).
+// Both are persisted for the daemon — the windows drive the guardian (M3), and the cost
+// gives every other consumer a second, independently-derived figure to check ccc's own
+// transcript math against.
 //
 // Degrades gracefully: with the daemon down it renders from stdin alone.
 import fs from "node:fs";
@@ -54,12 +58,23 @@ function main() {
   const sessionId = input.session_id ?? input.sessionId ?? "";
   const dir = stateDir();
 
-  // --- courier: persist the official `rate_limits` field (usage-limit windows) for the daemon (best effort) ----
-  if (sessionId && input.rate_limits && typeof input.rate_limits === "object") {
+  // --- courier: persist the stdin-only fields for the daemon (best effort) ----------------
+  // One file, one write per render: an API-key seat has no `rate_limits` but does have a
+  // cost, so either field alone is reason enough to write.
+  const officialCost = typeof input.cost?.total_cost_usd === "number" ? input.cost.total_cost_usd : null;
+  const hasLimits = input.rate_limits && typeof input.rate_limits === "object";
+  if (sessionId && (hasLimits || officialCost !== null)) {
     try {
       fs.mkdirSync(path.join(dir, "courier"), { recursive: true });
       const f = path.join(dir, "courier", `${sanitize(sessionId)}.json`);
-      fs.writeFileSync(f, JSON.stringify({ ts: Date.now(), rate_limits: input.rate_limits }));
+      fs.writeFileSync(
+        f,
+        JSON.stringify({
+          ts: Date.now(),
+          ...(hasLimits ? { rate_limits: input.rate_limits } : {}),
+          ...(officialCost !== null ? { cost_usd: officialCost } : {}),
+        }),
+      );
     } catch { /* never break the statusline */ }
   }
 
@@ -95,7 +110,7 @@ function main() {
   }
 
   // session cost: prefer official client-side estimate from stdin, fall back to daemon math
-  const cost = input.cost?.total_cost_usd ?? state?.sessionCostUsd;
+  const cost = officialCost ?? state?.sessionCostUsd;
   if (typeof cost === "number") parts.push(`$${cost.toFixed(2)}`);
 
   // context usage

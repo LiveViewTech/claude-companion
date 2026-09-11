@@ -208,6 +208,59 @@ describe("Guardian", () => {
   });
 });
 
+describe("Guardian courier: official session cost", () => {
+  function writeCostCourier(costUsd: number, ts = Date.now(), withLimits = false): void {
+    fs.mkdirSync(path.join(dir, "courier"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "courier", `${SID}.json`),
+      JSON.stringify({
+        ts,
+        cost_usd: costUsd,
+        ...(withLimits ? { rate_limits: { five_hour: { used_percentage: 10, resets_at: 1_800_000_000 } } } : {}),
+      }),
+    );
+  }
+
+  it("applies a cost-only courier (API-key seats report no usage windows)", () => {
+    const g = makeGuardian();
+    writeCostCourier(1.23);
+    const changed = g.sweep();
+    expect(changed.map((s) => s.sessionId)).toEqual([SID]);
+    expect(tracker.get(SID)?.officialCostUsd).toBe(1.23);
+    // No windows in the payload, so guardian state must stay untouched.
+    expect(tracker.get(SID)?.guardian.updatedAt).toBeNull();
+  });
+
+  it("keeps the official figure separate from ccc's own transcript math", () => {
+    const g = makeGuardian();
+    const local = tracker.get(SID)!.sessionCostUsd;
+    writeCostCourier(local + 5);
+    g.sweep();
+    expect(tracker.get(SID)?.sessionCostUsd).toBe(local);
+    expect(tracker.get(SID)?.officialCostUsd).toBe(local + 5);
+  });
+
+  it("ignores a stale courier and a repeat of the same number", () => {
+    const g = makeGuardian();
+    writeCostCourier(2, 2000);
+    g.sweep();
+    writeCostCourier(1, 1000); // older write, e.g. a slow statusline losing the race
+    expect(g.sweep()).toEqual([]);
+    expect(tracker.get(SID)?.officialCostUsd).toBe(2);
+    writeCostCourier(2, 3000); // unchanged total: no redraw
+    expect(g.sweep()).toEqual([]);
+    expect(tracker.get(SID)?.officialCostUsd).toBe(2);
+  });
+
+  it("still drives the usage windows when both fields ride along", () => {
+    const g = makeGuardian();
+    writeCostCourier(0.5, Date.now(), true);
+    g.sweep();
+    expect(tracker.get(SID)?.officialCostUsd).toBe(0.5);
+    expect(tracker.get(SID)?.guardian.fiveHourPct).toBe(10);
+  });
+});
+
 describe("Advisor", () => {
   it("nudges plan-first for planning-shaped prompts, throttled", () => {
     const advisor = makeAdvisor(() => false);

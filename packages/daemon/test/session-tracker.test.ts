@@ -30,6 +30,9 @@ function assistantLine(opts: {
   input?: number;
   output?: number;
   command?: string;
+  speed?: string;
+  geo?: string;
+  model?: string;
 }): string {
   const w5 = opts.write5m ?? 0;
   const w1 = opts.write1h ?? 0;
@@ -43,7 +46,7 @@ function assistantLine(opts: {
     version: "2.1.207",
     isSidechain: false,
     message: {
-      model: "claude-fable-5",
+      model: opts.model ?? "claude-fable-5",
       role: "assistant",
       content: opts.command
         ? [{ type: "tool_use", id: `tu-${opts.uuid}`, name: "Bash", input: { command: opts.command } }]
@@ -54,6 +57,8 @@ function assistantLine(opts: {
         cache_read_input_tokens: opts.cacheRead ?? 0,
         cache_creation_input_tokens: w5 + w1,
         cache_creation: { ephemeral_5m_input_tokens: w5, ephemeral_1h_input_tokens: w1 },
+        ...(opts.speed ? { speed: opts.speed } : {}),
+        ...(opts.geo ? { inference_geo: opts.geo } : {}),
       },
     },
   });
@@ -135,12 +140,45 @@ describe("SessionTracker", () => {
     expect(gaps[0]!["realized_rewrite_cost"]).toBeNull();
   });
 
-  it("captures Bash tool calls with command class + rtk detection", () => {
-    ingest(assistantLine({ uuid: "b1", ts: "2026-07-11T10:00:00.000Z", write1h: 1000, command: "rtk git status" }));
+  it("captures Bash tool calls with their command class", () => {
+    ingest(assistantLine({ uuid: "b1", ts: "2026-07-11T10:00:00.000Z", write1h: 1000, command: "git status --short" }));
     const calls = store.db.prepare("SELECT * FROM tool_calls").all() as Array<Record<string, unknown>>;
     expect(calls).toHaveLength(1);
     expect(calls[0]!["command_class"]).toBe("git status");
-    expect(calls[0]!["rtk_wrapped"]).toBe(1);
+  });
+
+  it("stores the premium modifiers on the turn and quotes projections at those rates", () => {
+    // Opus 5 in fast mode: $10/MTok input, so a 1h re-write of the prefix is 2 x $10.
+    ingest(assistantLine({ uuid: "f1", ts: "2026-07-11T10:00:00.000Z", write1h: 1_000_000, model: "claude-opus-5", speed: "fast", geo: "us" }));
+    const s = tracker.get("sess-t")!;
+    expect(s.rateMods).toEqual({ speed: "fast", geo: "us" });
+    // 1h write at the fast input rate ($10 x 2), then the US-inference 1.1x on top.
+    expect(s.rewriteCostUsd).toBeCloseTo((s.prefixTokens / 1_000_000) * 20 * 1.1, 6);
+
+    const row = store.db.prepare("SELECT speed, geo FROM turns WHERE uuid = 'f1'").get() as { speed: string; geo: string };
+    expect(row).toEqual({ speed: "fast", geo: "us" });
+  });
+
+  it("restores the premium modifiers with the counters after a restart", () => {
+    ingest(assistantLine({ uuid: "f1", ts: "2026-07-11T10:00:00.000Z", write1h: 1_000_000, model: "claude-opus-5", speed: "fast" }));
+    const before = tracker.get("sess-t")!.rewriteCostUsd;
+
+    const tracker2 = new SessionTracker(store);
+    tracker2.restoreFromStore();
+    const s = tracker2.get("sess-t")!;
+    expect(s.rateMods.speed).toBe("fast");
+    // Without the restore, the next re-write warning would quote half this.
+    expect(s.rewriteCostUsd).toBeCloseTo(before, 6);
+  });
+
+  it("keeps the couriered official cost beside its own total", () => {
+    ingest(assistantLine({ uuid: "c1", ts: "2026-07-11T10:00:00.000Z", write1h: 1000 }));
+    expect(tracker.get("sess-t")!.officialCostUsd).toBeNull();
+    expect(tracker.applyOfficialCost("sess-t", 4.2, 1000)?.officialCostUsd).toBe(4.2);
+    expect(tracker.applyOfficialCost("sess-t", 9.9, 500)).toBeUndefined(); // stale
+    expect(tracker.applyOfficialCost("nope", 1, 2000)).toBeUndefined(); // unknown session
+    expect(tracker.applyOfficialCost("sess-t", -1, 2000)).toBeUndefined(); // nonsense
+    expect(tracker.get("sess-t")!.officialCostUsd).toBe(4.2);
   });
 
   it("restores cumulative state from the store after restart", () => {

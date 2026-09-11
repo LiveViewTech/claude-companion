@@ -6,7 +6,6 @@ import { builtInPriceIds, resolvedPriceIds, type SessionState } from "@ccc/core"
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
 import { classStats, computeExactAttribution, toolLeaderboard } from "./attribution.ts";
-import { rtkGain } from "./rtk-gain.ts";
 import { coldRewriteSummary, projectHabits } from "./habits.ts";
 import { awayCoverageMs } from "./awake-tracker.ts";
 
@@ -151,11 +150,6 @@ export class Server {
       if (p === "/api/tools") {
         computeExactAttribution(this.store);
         return void this.json(res, { leaderboard: toolLeaderboard(this.store), classes: classStats(this.store) });
-      }
-      if (p === "/api/rtk") {
-        // rtk's own measured savings (ground truth — the transcript can't see
-        // hook-rewritten commands, so there's no meaningful A/B; see rtk-gain.ts).
-        return void this.json(res, { gain: rtkGain() });
       }
       if (p === "/api/pricing") {
         // Which rates are built in vs resolved from the published table, and when.

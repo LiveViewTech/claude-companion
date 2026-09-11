@@ -13,7 +13,6 @@ import type { Store } from "./store.ts";
 
 export interface ClassStats {
   commandClass: string;
-  rtkWrapped: boolean;
   n: number;
   medianChars: number;
   p90Chars: number;
@@ -57,30 +56,26 @@ export function computeExactAttribution(store: Store): number {
 export function classStats(store: Store): ClassStats[] {
   const rows = store.db
     .prepare(
-      `SELECT command_class AS cls, rtk_wrapped AS rtk, result_chars AS chars, result_tok_exact AS tok
+      `SELECT command_class AS cls, result_chars AS chars, result_tok_exact AS tok
        FROM tool_calls
        WHERE tool_name = 'Bash' AND command_class IS NOT NULL AND result_chars IS NOT NULL`,
     )
-    .all() as Array<{ cls: string; rtk: number; chars: number; tok: number | null }>;
+    .all() as Array<{ cls: string; chars: number; tok: number | null }>;
 
   const groups = new Map<string, { chars: number[]; toks: number[] }>();
   for (const r of rows) {
-    // JSON key: command classes can contain spaces (e.g. "git status"), so round-trip via JSON.
-    const key = JSON.stringify([r.cls, r.rtk]);
-    const g = groups.get(key) ?? { chars: [], toks: [] };
+    const g = groups.get(r.cls) ?? { chars: [], toks: [] };
     g.chars.push(r.chars);
     if (r.tok != null) g.toks.push(r.tok);
-    groups.set(key, g);
+    groups.set(r.cls, g);
   }
 
   const out: ClassStats[] = [];
-  for (const [key, g] of groups) {
-    const [cls, rtk] = JSON.parse(key) as [string, number];
+  for (const [cls, g] of groups) {
     g.chars.sort((a, b) => a - b);
     g.toks.sort((a, b) => a - b);
     out.push({
-      commandClass: cls!,
-      rtkWrapped: rtk === 1,
+      commandClass: cls,
       n: g.chars.length,
       medianChars: quantile(g.chars, 0.5),
       p90Chars: quantile(g.chars, 0.9),

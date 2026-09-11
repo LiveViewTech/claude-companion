@@ -1,4 +1,4 @@
-import type { PriceSpec, TtlTier, Usage } from "./types.ts";
+import type { PriceSpec, RateMods, TtlTier, Usage } from "./types.ts";
 
 /**
  * Date-aware pricing table, USD per million tokens.
@@ -14,8 +14,11 @@ import type { PriceSpec, TtlTier, Usage } from "./types.ts";
 const TABLE: Record<string, PriceSpec[]> = {
   "claude-fable-5": [{ inputPerM: 10, outputPerM: 50 }],
   "claude-mythos-5": [{ inputPerM: 10, outputPerM: 50 }],
-  "claude-opus-5": [{ inputPerM: 5, outputPerM: 25 }],
-  "claude-opus-4-8": [{ inputPerM: 5, outputPerM: 25 }],
+  // Fast mode is a research preview limited to these two models. 4.7 rejects speed:"fast"
+  // outright and 4.6 accepts it, runs standard and bills standard, so neither gets a
+  // fast entry. Verified 2026-09-09 against the pricing page's fast-mode table.
+  "claude-opus-5": [{ inputPerM: 5, outputPerM: 25, fast: { inputPerM: 10, outputPerM: 50 } }],
+  "claude-opus-4-8": [{ inputPerM: 5, outputPerM: 25, fast: { inputPerM: 10, outputPerM: 50 } }],
   "claude-opus-4-7": [{ inputPerM: 5, outputPerM: 25 }],
   "claude-opus-4-6": [{ inputPerM: 5, outputPerM: 25 }],
   "claude-opus-4-5": [{ inputPerM: 5, outputPerM: 25 }],
@@ -35,6 +38,17 @@ const TABLE: Record<string, PriceSpec[]> = {
 export const CACHE_READ_MULT = 0.1;
 export const CACHE_WRITE_5M_MULT = 1.25;
 export const CACHE_WRITE_1H_MULT = 2.0;
+
+/**
+ * US-only inference (`inference_geo: "us"`) bills 1.1x across input, output, cache writes
+ * and cache reads on Claude 4.6+. "global" is the default and standard-rated; those are
+ * the only two values the parameter accepts, so anything else is treated as standard and
+ * reported rather than guessed at.
+ * Verified 2026-09-09 against platform.claude.com/docs/en/manage-claude/data-residency.
+ */
+export const GEO_US_MULT = 1.1;
+const GEO_US = "us";
+const SPEED_FAST = "fast";
 
 /**
  * Rates resolved at runtime from Anthropic's published pricing table, so a model
@@ -182,6 +196,49 @@ function pickByDate(specs: PriceSpec[], atIso?: string): PriceSpec | null {
   return specs[specs.length - 1] ?? null;
 }
 
+/** Rates actually in force for one request, after fast mode and inference geo. */
+export interface EffectiveRates {
+  /** USD per million input tokens; cache columns derive from this. */
+  inputPerM: number;
+  outputPerM: number;
+  /**
+   * The request ran fast but the model has no known fast rates, so it was billed at
+   * standard. Under-stating is the safe direction, but it is still a hole in the table
+   * (a model grew a fast tier) — `ccc doctor` surfaces it rather than swallowing it.
+   */
+  unpricedFast: boolean;
+  /** An `inference_geo` other than "us"/"global" appeared, billed as standard. */
+  unknownGeo: boolean;
+}
+
+/** Modifiers a transcript usage block carries, in the shape the rate functions want. */
+export function modsOf(usage: Usage): RateMods {
+  return { speed: usage.speed, geo: usage.inference_geo };
+}
+
+/**
+ * Rates for `modelId` under `mods`. Fast mode swaps the base rates for the premium pair;
+ * US-only inference then scales everything by 1.1x. Order matters and matches the docs:
+ * the geo multiplier stacks on top of fast pricing, it does not replace it.
+ *
+ * Null when the model has no rates at all — same contract as lookupPrice, so callers keep
+ * showing $0-with-a-warning instead of a fabricated number.
+ */
+export function effectiveRates(modelId: string, mods?: RateMods, atIso?: string): EffectiveRates | null {
+  const price = lookupPrice(modelId, atIso);
+  if (!price) return null;
+  const wantsFast = mods?.speed === SPEED_FAST;
+  const fast = wantsFast ? price.fast : undefined;
+  const geo = mods?.geo;
+  const geoMult = geo === GEO_US ? GEO_US_MULT : 1;
+  return {
+    inputPerM: (fast?.inputPerM ?? price.inputPerM) * geoMult,
+    outputPerM: (fast?.outputPerM ?? price.outputPerM) * geoMult,
+    unpricedFast: wantsFast && fast === undefined,
+    unknownGeo: geo !== undefined && geo !== GEO_US && geo !== "global",
+  };
+}
+
 export interface TurnCost {
   totalUsd: number;
   inputUsd: number;
@@ -190,16 +247,32 @@ export interface TurnCost {
   cacheWriteUsd: number;
   /** True when pricing for the model was unknown and cost is 0. */
   unknownModel: boolean;
+  /** True when the turn ran fast mode on a model with no fast rates (billed standard). */
+  unpricedFastMode: boolean;
+  /** True when the turn reported an `inference_geo` we have no multiplier for. */
+  unknownGeo: boolean;
 }
 
-/** Cost of a single turn from its usage block, honoring the per-TTL write breakdown. */
+/**
+ * Cost of a single turn from its usage block, honoring the per-TTL write breakdown and
+ * the premium modifiers the block reports (fast mode, US-only inference).
+ */
 export function turnCost(usage: Usage, modelId: string, atIso?: string): TurnCost {
-  const price = lookupPrice(modelId, atIso);
-  if (!price) {
-    return { totalUsd: 0, inputUsd: 0, outputUsd: 0, cacheReadUsd: 0, cacheWriteUsd: 0, unknownModel: true };
+  const rates = effectiveRates(modelId, modsOf(usage), atIso);
+  if (!rates) {
+    return {
+      totalUsd: 0,
+      inputUsd: 0,
+      outputUsd: 0,
+      cacheReadUsd: 0,
+      cacheWriteUsd: 0,
+      unknownModel: true,
+      unpricedFastMode: false,
+      unknownGeo: false,
+    };
   }
-  const perTok = price.inputPerM / 1_000_000;
-  const outPerTok = price.outputPerM / 1_000_000;
+  const perTok = rates.inputPerM / 1_000_000;
+  const outPerTok = rates.outputPerM / 1_000_000;
   const w5 = usage.cache_creation?.ephemeral_5m_input_tokens;
   const w1 = usage.cache_creation?.ephemeral_1h_input_tokens;
   let cacheWriteUsd: number;
@@ -219,6 +292,8 @@ export function turnCost(usage: Usage, modelId: string, atIso?: string): TurnCos
     cacheReadUsd,
     cacheWriteUsd,
     unknownModel: false,
+    unpricedFastMode: rates.unpricedFast,
+    unknownGeo: rates.unknownGeo,
   };
 }
 

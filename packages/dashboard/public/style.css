@@ -146,6 +146,8 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .stats dd.carry { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
 .stats dd.carry.carry-green .carry-val { color: var(--good); }
 .stats dd.carry.carry-yellow .carry-val { color: var(--warn); }
+/* ccc's total and Claude Code's own disagree by more than rounding — hover for both. */
+.stats dd.cost.drift { color: var(--warn); cursor: help; }
 .stats dd.carry.carry-red .carry-val { color: var(--critical); }
 .prefix-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
 .carry-models-row dd.carry-models { font-weight: 400; font-size: 12px; color: var(--ink-2); }
@@ -204,21 +206,6 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .table-wrap tr:last-child td { border-bottom: none; }
 .table-wrap td.num { text-align: right; }
 .table-wrap th.num { text-align: right; }
-/* rtk's own-measured savings summary (ground truth above the transcript A/B). */
-.rtk-gain { margin: 0 0 10px; }
-.rtk-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; font-variant-numeric: tabular-nums; }
-.rtk-ok { color: var(--good); font-weight: 650; }
-.rtk-off { color: var(--serious); font-weight: 600; }
-.rtk-stat { color: var(--ink-2); }
-.rtk-stat b { color: var(--ink-1); font-weight: 650; }
-.rtk-bar { margin-top: 6px; height: 6px; max-width: 420px; background: var(--grid); border-radius: 999px; overflow: hidden; }
-.rtk-fill { height: 100%; width: 0; background: var(--good); border-radius: 999px; transition: width 0.4s ease; }
-.rtk-note { display: block; margin-top: 10px; font-size: 12px; line-height: 1.5; max-width: 640px; }
-.rtk-note code { background: var(--grid); padding: 0 4px; border-radius: 4px; }
-.verdict-saves { color: var(--good); font-weight: 600; }
-.verdict-overhead { color: var(--critical); font-weight: 600; }
-.verdict-none { color: var(--ink-2); }
-.verdict-nodata { color: var(--muted); }
 .rec { color: var(--ink-2); font-size: 12px; max-width: 480px; }
 /* Cost-audit panel: figures above the per-model table, notes below it. */
 .audit-figs { display: grid; grid-template-columns: max-content max-content 1fr; gap: 2px 16px; margin: 8px 0 10px; font-variant-numeric: tabular-nums; }
