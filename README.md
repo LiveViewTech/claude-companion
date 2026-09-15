@@ -1,8 +1,9 @@
 # claude-companion (`ccc`)
 
 Token/cache cockpit for Claude Code: cost visibility, a live prompt-cache-TTL countdown,
-self-measuring cache keep-warm, a prompt advisor, and a subscription usage-limit guardian
-that tells Claude to wrap up or write a handoff before you hit the wall.
+self-measuring cache keep-warm, a prompt advisor, and a guardian that tells Claude to write a
+handoff and wrap up before the session gets expensive — whether that's a usage limit closing in,
+a context that has grown too costly to keep re-reading, or keep-warm running out of runway.
 
 Linux-first, works on Windows and macOS. No native build steps (Node 22.18+ / 24+,
 uses built-in `node:sqlite` and native TypeScript execution — no compile).
@@ -42,7 +43,7 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
 | `ccc audit [--days N] [--backfill] [--accept] [--json]` | Reconcile ccc's cost math against Anthropic's meter; `--backfill` rebuilds the period from stored samples, `--accept` freezes the current per-model ratios as the drift baseline |
 | `ccc launch --ttl 1h\|5m [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
 | `ccc code [dir] --ttl 1h\|5m` | Same, for VS Code (extension sessions inherit the env) |
-| `ccc daemon start\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
+| `ccc daemon start\|restart\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
 | `ccc open` | Dashboard (countdown rings, month/today meter + costs, cache economics, tokens-by-tool) |
 | `ccc doctor` | Transcript schema-drift canary, TTL observation, daemon health |
 
@@ -99,8 +100,14 @@ which is the only way to catch a profile that didn't take.
 
 ## Features
 
-- **Cache countdown** — statusline `⏱ 4:37 (5m)` and dashboard ring, computed from the
+- **Cache countdown** — statusline `⏱ exp 11:32p` and dashboard ring, computed from the
   *observed* TTL tier of the last cache write; toast at T-60s with the cold re-write $ you'd pay.
+  (An absolute expiry clock, not a countdown: Claude Code only re-renders the statusline on
+  activity, so a countdown sits there showing a stale number while you read it.)
+- **Context size in tokens** — the statusline reports `ctx 187K`, yellow at 200K and red at 300K,
+  with the percent-of-window demoted to dim parentheses. A percentage reads reassuringly low
+  exactly where it should alarm: on a 1M-context model, 300K is "30% used" and costs roughly 3.5x
+  per turn what 100K does, because every turn re-reads the whole prefix.
 - **Turn signal** — plays a sound + flashes the dashboard when Claude finishes, asks a question, or
   needs permission (replaces the Claude Notifier plugin). The sound is hook-driven so it fires even if
   the daemon is down; the flash rides SSE. Sound and flash toggle independently from dashboard Controls
@@ -148,17 +155,53 @@ which is the only way to catch a profile that didn't take.
   ccc cannot see (the Claude app, claude.ai, another machine) and are reported separately rather
   than folded into the ratio. `--backfill` reconstructs past windows from meter samples already on
   disk, so a fresh install can answer the question immediately.
-- **Keep-warm (experimental, API-billing only)** — arm per session in the dashboard; a Stop hook
-  keeps the turn open and issues a minimal `ok` turn just before TTL expiry. Refuses to arm on
-  1h-tier (subscription) sessions; soft ping cap; **every ping is measured from the transcript and
-  the first cache miss auto-disarms**; honest net-saved accounting (can be negative).
+- **Keep-warm (experimental)** — arm per session in the dashboard; a Stop hook keeps the turn open
+  and issues a minimal `ok` turn just before TTL expiry. **Every ping is measured from the transcript
+  and the first cache miss auto-disarms**; honest net-saved accounting (can be negative).
+  Policy is **per TTL tier**, because the two tiers want opposite behavior: a 5m cache dies between
+  turns on any real pause (ping freely, cap 12), while a 1h cache survives think-time and only lapses
+  across a genuine walk-away (cap 3, then escalate to a handoff instead of pinging all night). The
+  arithmetic: a ping costs one cache read of the prefix, the cold re-write it avoids costs 1.25x the
+  prefix as a write — about a 12x ratio, so ~12 pings is break-even. The tier is **measured, never
+  assumed** — `cache_creation.ephemeral_5m/1h` on a real turn always wins, so `keepwarm.accountType`
+  only seeds the guess before the first cache write and a wrong setting can never misprice a ping.
+  The mapping is the opposite of intuition for some: **subscription seats get the 1h cache and API
+  keys get 5m**, and a Pro seat in overage drops to 5m — which is exactly why it's measured.
 - **Advisor** — UserPromptSubmit hook (<100ms budget, fail-open): plan-first nudges on
   design-shaped prompts; model-switch cache-invalidation cost shown ambiently (model-scoped caches!).
-- **Usage-limit guardian** — tracks your plan's usage windows (the same 5-hour / 7-day limits that
-  trigger Pro/Max throttling). The statusline couriers Claude Code's official `rate_limits` field
-  (that's the CLI's name for these windows) to the daemon; at 80% you get a toast, at 90%
-  (configurable, `guardian.action`: `off|notify-only|wrapup|handoff`)
-  Claude is told — once — to capture context / update docs / write `HANDOFF.md` and wrap up.
+- **Guardian: find a stopping place before it gets expensive** — one one-shot channel, armed by
+  three unrelated triggers, that tells Claude — once per session — to write a handoff and wrap up:
+  1. **A usage window near its cap.** The statusline couriers Claude Code's official `rate_limits`
+     field (the CLI's own name for the 5-hour / 7-day plan windows) to the daemon; toast at 80%,
+     instruction at 90% (`guardian.notifyPct` / `actPct`).
+  2. **Context past `guardian.handoffAtContextTokens`** (default 150K). The only trigger that works
+     on a fixed-token-rate seat, which has no usage windows to read at all: past ~150K, carrying the
+     context costs more per turn than a fresh session plus one handoff read. It's a threshold test
+     evaluated every turn, not a crossing detector, so switching it on mid-session arms on the next
+     turn rather than missing a crossing that already happened.
+  3. **Keep-warm reaching its ping cap** on an escalating tier — the point where buying time stops
+     being the cheap move and externalizing the state starts.
+
+  Each trigger supplies its own reason, and both delivery surfaces splice that reason into the
+  instruction, so a context-triggered handoff never claims your subscription is nearly exhausted on
+  a seat that has no usage windows. The handoff path is **resolved per session against that session's
+  own cwd** (`guardian.handoffPath`, default `HANDOFF.md`) and the exact path is named in the
+  instruction and echoed in the toast — naming the file in prose left the model to resolve it against
+  whatever directory it believed it was in, which in a monorepo is a coin flip. The instruction says
+  to **revise an existing handoff in place**, not write a new one over the top of it.
+
+  When the instruction has been delivered and Claude has written the file, the **next** stop prints
+  the one thing aimed at you rather than at Claude: a paste-ready resume prompt naming the resolved
+  path, so `/clear` doesn't leave you composing one by hand. It's a `systemMessage` — shown to you,
+  never sent to the model, costing no tokens.
+
+  An armed-but-undelivered instruction survives a daemon restart. It has to: the one-shot key that
+  stops the guardian nagging twice is persisted, so when the instruction itself lived only in memory,
+  a restart in the gap between arming and delivery ate the handoff *and* left the key behind — that
+  (session, threshold) could then never fire again.
+
+  Nothing here clears anything. A hook can only inject an instruction and notify; `/clear` stays a
+  key you press.
 - **A second opinion on every session's cost** — Claude Code passes its own running total for
   the session to the statusline (`cost.total_cost_usd`) and nowhere else; the statusline
   couriers it to the daemon alongside the usage windows. It is kept beside ccc's own
@@ -208,8 +251,21 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
   "monthlyBudgetUsd": 500,
   "pricing": { "autoResolve": true, "refreshDays": 7 },
   "accountUsage": { "enabled": true, "pollSeconds": 300 },
-  "guardian": { "action": "handoff", "notifyPct": 80, "actPct": 90 },
-  "keepwarm": { "enabled": true, "maxPingsPerIdle": 12 },
+  "guardian": {
+    "action": "handoff",
+    "notifyPct": 80,
+    "actPct": 90,
+    "handoffAtContextTokens": 150000,
+    "handoffPath": "HANDOFF.md"
+  },
+  "keepwarm": {
+    "enabled": true,
+    "accountType": "auto",
+    "tiers": {
+      "5m": { "arm": true, "maxPingsPerIdle": 12, "escalateToHandoff": false },
+      "1h": { "arm": true, "maxPingsPerIdle": 3, "escalateToHandoff": true }
+    }
+  },
   "advisor": { "enabled": true, "nudgeEvery": 10 },
   "naming": { "enabled": true, "model": "haiku" },
   "turnSignal": { "enabled": true, "sound": true, "flash": true, "soundLeadMs": 750 },
@@ -224,11 +280,25 @@ the account's real limit instead.
 Turning the optional features on/off:
 
 - **Keep-warm** — `keepwarm.enabled` (master switch; even when `true` it's opt-in per
-  session via the dashboard **arm** button). Set `false` to hard-disable.
+  session via the dashboard **arm** button). Set `false` to hard-disable — note that this
+  short-circuits the *entire* gate, so the per-tier flags, the ping cap and the cap's handoff
+  escalation all go dead with it; the context-size handoff is the one trigger that survives.
+  Per-tier policy lives in `keepwarm.tiers["5m"|"1h"]`: `arm` (allow keep-warm on sessions
+  measured at that tier), `maxPingsPerIdle` (soft cap) and `escalateToHandoff` (at the cap, arm a
+  handoff rather than go quiet). `keepwarm.accountType` (`auto|pro|enterprise`) only seeds the
+  expected tier until a real cache write is observed — the measurement always wins.
+  A pre-tier config with `allow1hArm` / a single `maxPingsPerIdle` is migrated on load, keeping its
+  intent (a config that refused the 1h tier keeps refusing it), and the stale keys are dropped.
 - **Advisor** (plan-first nudge) — `advisor.enabled`; `advisor.nudgeEvery` throttles how
   often it can fire per session. This is separate from the guardian's wrap-up delivery.
 - **Session naming** — `naming.enabled`; `naming.model` is passed to `claude -p --model`.
-- **Usage-limit guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`.
+- **Guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`. This is also the master
+  switch for the context-size and ping-cap triggers: on `off` or `notify-only` they never inject an
+  instruction. `guardian.handoffAtContextTokens` sets the context threshold (`null` switches that
+  trigger off, leaving the guardian purely usage-window driven — the right setting only if you
+  actually have usage windows). `guardian.handoffPath` (default `HANDOFF.md`) is resolved against
+  each session's own cwd; blank resets it to the default rather than leaving the instruction naming
+  no file at all.
 - **Turn signal** — `turnSignal.sound` (audible alert) and `turnSignal.flash` (dashboard flash)
   toggle independently; `turnSignal.enabled` and the rest of the block are config-only.
 - **Card view** — `dashboard.cardView`: `advanced` (default) is the full session card; `simple` keeps
@@ -292,12 +362,14 @@ audio endpoint's spin-up clips the silence instead of the start of the sound.
 - cache read = **0.1×** base input; 5m write = **1.25×**; 1h write = **2×**; every hit refreshes the TTL free.
 - Subscription sessions get the 1h TTL free (drops to 5m in overage); API-key sessions default to 5m.
 - Caches are **model-scoped**: `/model` mid-session throws the whole cache away.
-- ~12 pings ≈ one cold 5m re-write, so keep-warm pays only if you return within ~55 minutes.
+- ~12 pings ≈ one cold re-write of the same prefix, which is what sets the per-tier caps: on 5m,
+  12 pings buys an hour and is break-even; on 1h, a 12-cap could spend a whole re-write in pings
+  **and** still eat the re-write when you don't come back before morning, so the cap is 3.
 
 ## Development
 
 ```sh
-npm test          # vitest (272 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, turn-signal, namer, launcher, controls, account-usage, window-sampler, install-marker, price-docs, price-resolver)
+npm test          # vitest (327 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, stop hook, config migration, turn-signal, namer, launcher, controls, account-usage, window-sampler, install-marker, price-docs, price-resolver)
 npm run typecheck
 ```
 

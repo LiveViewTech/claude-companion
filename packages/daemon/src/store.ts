@@ -608,6 +608,10 @@ export class Store {
       .run(key, value);
   }
 
+  delMeta(key: string): void {
+    this.db.prepare(`DELETE FROM meta WHERE key = ?`).run(key);
+  }
+
   close(): void {
     this.db.close();
   }

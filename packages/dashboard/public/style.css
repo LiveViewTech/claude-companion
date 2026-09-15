@@ -216,16 +216,22 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .audit-foot .warn { color: var(--warn); }
 .audit-foot code { color: var(--ink-2); background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 
-/* Feature toggles panel. */
+/* Feature toggles panel. Each row is a fixed group (e.g. keep-warm + its dependents) so
+   ordering doesn't get reshuffled by flex-wrap the way a single flat container would. */
 .ctrl-grid {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 28px;
-  align-items: center;
+  flex-direction: column;
+  gap: 14px;
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 16px;
+}
+.ctrl-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  align-items: center;
 }
 .ctrl { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .ctrl input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
@@ -233,6 +239,19 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
   font: inherit; padding: 3px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-1); cursor: pointer;
 }
+.ctrl input[type="number"] {
+  font: inherit; width: 6.5em; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-1);
+}
+/* Wider than the number inputs: it holds a path, and a truncated one can't be checked. */
+.ctrl input[type="text"] {
+  font: inherit; width: 12em; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-1);
+}
+/* A control whose prerequisite is off: dim the whole row, not just the input, so it reads
+   as "does not apply" rather than "did not take". Set by setCtrlEnabled in controls.js. */
+.ctrl-off { opacity: 0.45; cursor: default; }
+.ctrl-off input, .ctrl-off select { cursor: default; }
 
 .kw-row dd { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .kw-btn {

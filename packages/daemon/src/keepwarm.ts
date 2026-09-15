@@ -1,5 +1,5 @@
-import { breakEven, minCacheablePrefix, pingCostUsd, rewriteCostUsd, turnCost, type AssistantTurn, type SessionState } from "@ccc/core";
-import type { CccConfig } from "./config.ts";
+import { breakEven, minCacheablePrefix, pingCostUsd, rewriteCostUsd, turnCost, type AssistantTurn, type SessionState, type TtlTier } from "@ccc/core";
+import type { CccConfig, KeepWarmTierPolicy } from "./config.ts";
 import type { SessionTracker } from "./session-tracker.ts";
 import type { Store } from "./store.ts";
 
@@ -10,9 +10,14 @@ import type { Store } from "./store.ts";
  * the first cache MISS auto-disarms.
  *
  * Gates (all must pass to arm or authorize):
- *  - last cache write was 5m-tier (1h-tier is refused unless keepwarm.allow1hArm is on)
+ *  - the session's TTL tier is known (measured, or seeded from keepwarm.accountType)
+ *  - that tier's policy allows arming (keepwarm.tiers[tier].arm)
  *  - prefix >= the model's minimum cacheable size
- *  - pings this idle period < soft cap (config, user-overridable)
+ *  - pings this idle period < that tier's soft cap
+ *
+ * Reaching the cap on a tier with `escalateToHandoff` doesn't just stop the pings — it
+ * arms a HANDOFF.md instruction, because past the cap the cheapest available move is to
+ * externalize the state and start fresh rather than keep paying to hold the context.
  */
 export class KeepWarm {
   private tracker: SessionTracker;
@@ -26,16 +31,45 @@ export class KeepWarm {
   /** Idle-period bookkeeping for counterfactual savings. */
   private idleStart = new Map<string, number>();
 
+  /** Ask the guardian to arm a handoff. Injected so keepwarm needn't import Guardian. */
+  private onEscalate: (sessionId: string, reason: string) => void;
+
   constructor(opts: {
     tracker: SessionTracker;
     store: Store;
     cfg: CccConfig;
     onEvent: (kind: string, sessionId: string, payload: unknown) => void;
+    /** Called once when a session hits the ping cap on an escalating tier. */
+    onEscalate?: (sessionId: string, reason: string) => void;
   }) {
     this.tracker = opts.tracker;
     this.store = opts.store;
     this.cfg = opts.cfg;
     this.onEvent = opts.onEvent;
+    this.onEscalate = opts.onEscalate ?? (() => {});
+  }
+
+  /**
+   * The session's TTL tier. A measured tier always wins; `accountType` only seeds a
+   * session that hasn't reported a cache write yet, so a wrong account setting costs at
+   * most the first idle period and can never misprice a ping.
+   */
+  tierFor(state: SessionState): TtlTier | null {
+    if (state.ttlTier != null) return state.ttlTier;
+    switch (this.cfg.keepwarm.accountType) {
+      case "pro":
+        return "5m";
+      case "enterprise":
+        return "1h";
+      default:
+        return null;
+    }
+  }
+
+  private policyFor(state: SessionState): { tier: TtlTier; policy: KeepWarmTierPolicy } | null {
+    const tier = this.tierFor(state);
+    if (tier == null) return null;
+    return { tier, policy: this.cfg.keepwarm.tiers[tier] };
   }
 
   /** Dashboard toggle. Returns the updated keepwarm block (with reason on refusal). */
@@ -64,16 +98,22 @@ export class KeepWarm {
   /** Why keep-warm must NOT run right now; null = allowed. */
   private gate(state: SessionState): string | null {
     if (!this.cfg.keepwarm.enabled) return "keep-warm disabled in settings";
-    if (state.ttlTier == null) return "no cache write observed yet";
-    if (state.ttlTier === "1h" && !this.cfg.keepwarm.allow1hArm) {
-      return "session is on the 1h TTL (subscription) — nothing to keep warm";
-    }
+    const resolved = this.policyFor(state);
+    if (!resolved) return "no cache write observed yet (and no account type set)";
+    const { tier, policy } = resolved;
+    if (!policy.arm) return `keep-warm is off for ${tier}-TTL sessions (see account settings)`;
     if (!state.model) return "model unknown";
     const min = minCacheablePrefix(state.model);
     if (state.prefixTokens < min) return `prefix ${state.prefixTokens} < cacheable minimum ${min}`;
     const pings = this.idlePings.get(state.sessionId) ?? 0;
-    if (pings >= this.cfg.keepwarm.maxPingsPerIdle) {
-      return `ping cap reached (${pings}/${this.cfg.keepwarm.maxPingsPerIdle} this idle period)`;
+    if (pings >= policy.maxPingsPerIdle) {
+      // Past the cap, more pings cost more than the re-write they avoid. If this tier
+      // escalates, hand the session to the guardian so the state gets externalized
+      // instead of the cache simply being allowed to die unannounced.
+      if (policy.escalateToHandoff) {
+        this.onEscalate(state.sessionId, `keep-warm ping cap reached on ${tier} tier (${pings}/${policy.maxPingsPerIdle})`);
+      }
+      return `ping cap reached (${pings}/${policy.maxPingsPerIdle} this idle period)`;
     }
     return null;
   }
@@ -151,9 +191,12 @@ export class KeepWarm {
     if (state.keepwarm.armed && (this.idlePings.get(sessionId) ?? 0) > 0 && turn.usage) {
       const pingsThisIdle = this.idlePings.get(sessionId) ?? 0;
       const warmReturn = turn.usage.cache_read_input_tokens > 0;
-      if (warmReturn && state.model) {
+      const tier = this.tierFor(state);
+      if (warmReturn && state.model && tier) {
         // Without pings the cache would have died: the avoided cold re-write is the win.
-        const avoided = rewriteCostUsd(state.prefixTokens, "5m", state.model, state.rateMods);
+        // Quote it at the session's own tier — a 1h write costs more than a 5m one, so
+        // hardcoding "5m" here understated the savings on every subscription session.
+        const avoided = rewriteCostUsd(state.prefixTokens, tier, state.model, state.rateMods);
         state.keepwarm.netSavedUsd += avoided;
         this.onEvent("keepwarm_reconciled", sessionId, { pingsThisIdle, avoidedUsd: avoided });
       }
@@ -168,11 +211,13 @@ export class KeepWarm {
   /** Live break-even numbers for the dashboard. */
   breakEvenFor(sessionId: string): ReturnType<typeof breakEven> | null {
     const state = this.tracker.get(sessionId);
-    if (!state?.model || !state.ttlTier) return null;
+    if (!state?.model) return null;
+    const tier = this.tierFor(state);
+    if (!tier) return null;
     const measured = this.medianPingOutput(sessionId);
     // At the session's own rates: in fast mode both the ping and the re-write it avoids
     // cost 2x, and quoting either at standard rates would misprice the trade.
-    return breakEven(state.prefixTokens, state.ttlTier, state.model, measured ?? 200, state.rateMods);
+    return breakEven(state.prefixTokens, tier, state.model, measured ?? 200, state.rateMods);
   }
 
   private medianPingOutput(sessionId: string): number | null {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { daemonStart, daemonStatus, daemonStop, ensureDaemon } from "./daemon-ctl.ts";
+import { daemonRestart, daemonStart, daemonStatus, daemonStop, ensureDaemon } from "./daemon-ctl.ts";
 import { doctor } from "./doctor.ts";
 import { openDashboard } from "./open.ts";
 import { install, uninstall } from "./install.ts";
@@ -17,7 +17,8 @@ async function run(): Promise<number> {
       if (sub === "start") return daemonStart();
       if (sub === "stop") return daemonStop();
       if (sub === "status") return daemonStatus();
-      console.error("usage: ccc daemon <start|stop|status>");
+      if (sub === "restart") return daemonRestart();
+      console.error("usage: ccc daemon <start|stop|status|restart>");
       return 2;
     }
     case "ensure-daemon":
@@ -54,7 +55,9 @@ commands:
   ccc launch [--ttl 1h|5m] [-- args]
                                  start claude with a cache-TTL profile
   ccc code [dir] [--ttl 1h|5m]   start VS Code with a cache-TTL profile
-  ccc daemon start|stop|status   control the background daemon
+  ccc daemon start|stop|status|restart
+                                 control the background daemon (restart waits for the old
+                                 process to release the port; stop && start does not)
   ccc ensure-daemon              start the daemon iff not running (used by SessionStart hook)
   ccc open                       open the dashboard in a browser
   ccc doctor                     check transcript schema, daemon health`);

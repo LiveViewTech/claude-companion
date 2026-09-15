@@ -79,22 +79,63 @@ export async function daemonStart(foreground = false): Promise<number> {
   return 1;
 }
 
-export async function daemonStop(): Promise<number> {
+/** Poll until the port stops answering /healthz. Returns false if it never does. */
+async function waitForPortFree(port: number, attempts = 20, everyMs = 250): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (!(await isHealthy(port))) return true;
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+  return !(await isHealthy(port));
+}
+
+/**
+ * Stop the daemon. `wait` polls until the port is actually free, escalating to SIGKILL if
+ * the process ignores SIGTERM — required before starting a replacement, because
+ * daemonStart() treats a still-answering port as "already running" and no-ops.
+ */
+export async function daemonStop(wait = false): Promise<number> {
   const info = readPid();
+  const cfg = loadConfig();
+  const port = info?.port ?? cfg.port;
   if (!info) {
     console.log("daemon: not running (no pid file)");
     return 0;
   }
+  let alive = true;
   try {
     process.kill(info.pid, "SIGTERM");
     console.log(`sent SIGTERM to pid ${info.pid}`);
   } catch {
     console.log("daemon process already gone; cleaning pid file");
+    alive = false;
   }
+  // Remove the pid file only after we have the pid in hand, so an escalation can still use it.
   try {
     fs.unlinkSync(pidFile());
   } catch { /* ignore */ }
-  return 0;
+  if (!wait || !alive) return 0;
+
+  if (await waitForPortFree(port)) return 0;
+  // Still serving after ~5s: SIGKILL and give the socket a moment to close.
+  try {
+    process.kill(info.pid, "SIGKILL");
+    console.log(`pid ${info.pid} ignored SIGTERM — sent SIGKILL`);
+  } catch { /* already gone */ }
+  if (await waitForPortFree(port, 12)) return 0;
+  console.error(`port ${port} is still answering after SIGKILL — something else may be bound to it`);
+  return 1;
+}
+
+/**
+ * Stop then start, waiting for the old process to release the port in between.
+ * `stop && start` does NOT do this: stop returns before the process exits, so start sees a
+ * healthy port, reports "already running", and exits 0 having started nothing — leaving no
+ * daemon at all once the old one finishes shutting down.
+ */
+export async function daemonRestart(): Promise<number> {
+  const code = await daemonStop(true);
+  if (code !== 0) return code;
+  return daemonStart();
 }
 
 /** Idempotent start for the SessionStart hook: fast no-op when healthy. */

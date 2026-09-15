@@ -178,6 +178,20 @@ describe("applyConfigUpdate teardown effects", () => {
     expect(c.keepwarm).toBe(keepwarmRef); // mutated in place, same reference the engines hold
   });
 
+  it("takes a handoffPath, trims it, and treats blank as a reset rather than an unset", () => {
+    const c = structuredClone(DEFAULTS);
+    applyConfigUpdate(c, { guardian: { handoffPath: "docs/HANDOFF.md" } });
+    expect(c.guardian.handoffPath).toBe("docs/HANDOFF.md");
+    applyConfigUpdate(c, { guardian: { handoffPath: "  notes/STATE.md  " } });
+    expect(c.guardian.handoffPath).toBe("notes/STATE.md");
+    // Blank must not leave the instruction naming nothing at all.
+    applyConfigUpdate(c, { guardian: { handoffPath: "   " } });
+    expect(c.guardian.handoffPath).toBe("HANDOFF.md");
+    // A non-string is ignored, not coerced into a path.
+    applyConfigUpdate(c, { guardian: { handoffPath: 7 } } as never);
+    expect(c.guardian.handoffPath).toBe("HANDOFF.md");
+  });
+
   it("toggles turnSignal.sound and turnSignal.flash independently, leaving the rest of the block untouched", () => {
     const c = structuredClone(DEFAULTS); // sound: true, flash: true
     applyConfigUpdate(c, { turnSignal: { sound: false } });

@@ -312,3 +312,224 @@ describe("Advisor", () => {
     expect(advisor.advise({ session_id: SID, prompt: "architect a new service from scratch" }).systemMessage).toMatch(/plan mode/);
   });
 });
+
+describe("guardian: non-usage-window handoff triggers", () => {
+  it("armHandoff arms the pending action once, then refuses to re-arm the same reason", () => {
+    const g = makeGuardian();
+    expect(g.armHandoff(SID, "keepwarm-cap", "cap reached")).toBe(true);
+    expect(tracker.get(SID)!.guardian.pendingAction).toBe("handoff");
+    // Same reason, already pending: no double-arm.
+    expect(g.armHandoff(SID, "keepwarm-cap", "cap reached")).toBe(false);
+    // Even after delivery, the one-shot key keeps it from firing again this session.
+    expect(g.ack(SID, "handoff")).toBe(true);
+    expect(g.armHandoff(SID, "keepwarm-cap", "cap reached")).toBe(false);
+  });
+
+  it("armHandoff never injects on 'off' or 'notify-only'", () => {
+    for (const action of ["off", "notify-only"] as const) {
+      const g = makeGuardian({ action });
+      expect(g.armHandoff(SID, `r-${action}`, "x")).toBe(false);
+      expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
+    }
+  });
+
+  it("armHandoff does not stack on top of an undelivered instruction", () => {
+    const g = makeGuardian();
+    expect(g.armHandoff(SID, "first", "x")).toBe(true);
+    expect(g.armHandoff(SID, "second", "y")).toBe(false);
+  });
+
+  it("onAssistantTurn arms a handoff once context passes the threshold", () => {
+    makeGuardian({ handoffAtContextTokens: 500 }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingAction).toBe("handoff");
+  });
+
+  it("onAssistantTurn is inert below the threshold, and when the trigger is null", () => {
+    makeGuardian({ handoffAtContextTokens: 10_000_000 }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
+
+    makeGuardian({ handoffAtContextTokens: null }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
+  });
+});
+
+describe("guardian: the delivered instruction states the real reason", () => {
+  it("a context-triggered handoff does not claim a usage limit", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    const reason = tracker.get(SID)!.guardian.pendingReason!;
+    expect(reason).toMatch(/context has grown/);
+    expect(reason).not.toMatch(/usage limit/i);
+    expect(reason).not.toMatch(/subscription/i);
+  });
+
+  it("a usage-window handoff still says so, with the window and percentage", () => {
+    const g = makeGuardian();
+    writeCourier(95);
+    g.sweep();
+    const reason = tracker.get(SID)!.guardian.pendingReason!;
+    expect(reason).toMatch(/usage limit is nearly exhausted/);
+    expect(reason).toMatch(/5-hour/);
+    expect(reason).toMatch(/95%/);
+  });
+
+  it("armHandoff carries the caller's human reason, never a usage-limit default", () => {
+    const g = makeGuardian();
+    g.armHandoff(SID, "keepwarm-cap", "cap 3/3", "keep-warm has stopped pinging");
+    expect(tracker.get(SID)!.guardian.pendingReason).toBe("keep-warm has stopped pinging");
+  });
+
+  it("ack clears the reason along with the action", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    expect(g.ack(SID, "handoff")).toBe(true);
+    const gs = tracker.get(SID)!.guardian;
+    expect(gs.pendingAction).toBeNull();
+    expect(gs.pendingReason).toBeNull();
+  });
+});
+
+describe("guardian: the handoff path is pinned, not left to the model", () => {
+  it("resolves the configured path against the session's own cwd", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    const g = makeGuardian({ handoffAtContextTokens: 500, handoffPath: "HANDOFF.md" });
+    g.onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(path.resolve("/repo/root", "HANDOFF.md"));
+  });
+
+  it("honors a subdirectory path and an absolute path", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    makeGuardian({ handoffAtContextTokens: 500, handoffPath: "docs/HANDOFF.md" }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(path.resolve("/repo/root", "docs/HANDOFF.md"));
+
+    tracker.get(SID)!.guardian.pendingAction = null;
+    const abs = path.resolve("/elsewhere/NOTES.md");
+    makeGuardian({ handoffAtContextTokens: 501, handoffPath: abs }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(abs);
+  });
+
+  it("falls back to the bare configured path when the session has no cwd yet", () => {
+    expect(tracker.get(SID)!.cwd).toBeUndefined();
+    makeGuardian({ handoffAtContextTokens: 500, handoffPath: "HANDOFF.md" }).onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe("HANDOFF.md");
+  });
+
+  it("records the path on a usage-window arming too, and reports it to the notifier", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    const g = makeGuardian();
+    writeCourier(95);
+    g.sweep();
+    const resolved = path.resolve("/repo/root", "HANDOFF.md");
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(resolved);
+    expect(notifications.find((n) => n.level === "act")!.handoffPath).toBe(resolved);
+  });
+
+  it("the advisor names the resolved path in both the instruction and the user message", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    const resolved = path.resolve("/repo/root", "HANDOFF.md");
+    const res = makeAdvisor((sid, action) => g.ack(sid, action)).advise({ session_id: SID, prompt: "next" });
+    expect(res.additionalContext).toContain(`Update ${resolved}`);
+    expect(res.systemMessage).toContain(resolved);
+    // The old wording resolved itself against whatever cwd the model assumed.
+    expect(res.additionalContext).not.toContain("in the project root");
+  });
+});
+
+describe("guardian: the human gets a resume prompt, once, after delivery", () => {
+  it("ack on a handoff leaves a paste-ready prompt naming the resolved path", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
+    expect(g.ack(SID, "handoff")).toBe(true);
+    const prompt = tracker.get(SID)!.guardian.resumePrompt!;
+    expect(prompt).toContain(path.resolve("/repo/root", "HANDOFF.md"));
+    expect(prompt).toMatch(/next-actions/i);
+    // The path is cleared along with the rest of the pending block.
+    expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBeNull();
+  });
+
+  it("shows exactly once", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    g.ack(SID, "handoff");
+    expect(g.resumeShown(SID)).toBe(true);
+    expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
+    expect(g.resumeShown(SID)).toBe(false);
+  });
+
+  it("arms no resume prompt for a wrapup, which writes no single file to point at", () => {
+    const g = makeGuardian({ action: "wrapup", handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    expect(g.ack(SID, "wrapup")).toBe(true);
+    expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
+  });
+
+  it("arms the prompt whichever surface delivered — the advisor path included", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    makeAdvisor((sid, action) => g.ack(sid, action)).advise({ session_id: SID, prompt: "next" });
+    expect(tracker.get(SID)!.guardian.resumePrompt).toMatch(/HANDOFF\.md/);
+  });
+});
+
+describe("guardian: an armed instruction survives a daemon restart", () => {
+  /** A restart is a fresh Guardian over the same store, reading tracker state rebuilt from the DB. */
+  const afterRestart = (cfg?: Partial<CccConfig["guardian"]>) => makeGuardian(cfg);
+
+  it("re-attaches an undelivered instruction instead of losing it to the one-shot key", () => {
+    tracker.get(SID)!.cwd = "/repo/root";
+    makeGuardian({ handoffAtContextTokens: 500 }).onAssistantTurn(SID);
+    const armed = { ...tracker.get(SID)!.guardian };
+    expect(armed.pendingAction).toBe("handoff");
+
+    // The process dies here: in-memory state is gone, the one-shot key in `meta` is not.
+    const g2 = afterRestart({ handoffAtContextTokens: 500 });
+    tracker.get(SID)!.guardian.pendingAction = null;
+    tracker.get(SID)!.guardian.pendingReason = null;
+    tracker.get(SID)!.guardian.pendingHandoffPath = null;
+
+    expect(g2.restorePending().map((s) => s.sessionId)).toEqual([SID]);
+    const back = tracker.get(SID)!.guardian;
+    expect(back.pendingAction).toBe("handoff");
+    expect(back.pendingReason).toBe(armed.pendingReason);
+    expect(back.pendingHandoffPath).toBe(armed.pendingHandoffPath);
+
+    // And it still delivers exactly once afterwards.
+    expect(g2.ack(SID, "handoff")).toBe(true);
+    expect(g2.ack(SID, "handoff")).toBe(false);
+  });
+
+  it("re-attaches an unshown resume prompt too", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    g.ack(SID, "handoff");
+    const prompt = tracker.get(SID)!.guardian.resumePrompt;
+    expect(prompt).toBeTruthy();
+
+    tracker.get(SID)!.guardian.resumePrompt = null;
+    afterRestart().restorePending();
+    expect(tracker.get(SID)!.guardian.resumePrompt).toBe(prompt);
+  });
+
+  it("leaves nothing behind once delivered and shown", () => {
+    const g = makeGuardian({ handoffAtContextTokens: 500 });
+    g.onAssistantTurn(SID);
+    g.ack(SID, "handoff");
+    g.resumeShown(SID);
+    expect(afterRestart().restorePending()).toEqual([]);
+    expect(store.getMeta(`guardian_pending:${SID}`)).toBeNull();
+  });
+
+  it("restores nothing for a session that never armed", () => {
+    expect(makeGuardian().restorePending()).toEqual([]);
+  });
+
+  it("survives a corrupt saved block rather than throwing at startup", () => {
+    store.setMeta(`guardian_pending:${SID}`, "{not json");
+    expect(makeGuardian().restorePending()).toEqual([]);
+    expect(store.getMeta(`guardian_pending:${SID}`)).toBeNull();
+  });
+});

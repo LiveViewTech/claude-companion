@@ -192,18 +192,29 @@ export async function main(): Promise<void> {
     sampler: windowSampler,
     onNotify: (n) => {
       const s = tracker.get(n.sessionId);
-      const win = n.window === "five_hour" ? "5-hour" : "weekly";
+      const who = s?.projectSlug ?? n.sessionId;
+      const win = n.window === "five_hour" ? "5-hour" : n.window === "seven_day" ? "weekly" : null;
       const resets = n.resetsAt ? new Date(n.resetsAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
-      toast(
-        {
-          title: n.level === "act" ? `Usage limit ${Math.round(n.pct)}% — wrapping up` : `Usage limit ${Math.round(n.pct)}%`,
-          message:
-            n.level === "act"
-              ? `${s?.projectSlug ?? n.sessionId}: ${win} limit nearly exhausted (resets ${resets}). Claude will be told to ${n.action === "handoff" ? "write a handoff" : "capture context and wrap up"}.`
-              : `${s?.projectSlug ?? n.sessionId}: ${win} limit at ${Math.round(n.pct)}% (resets ${resets}).`,
-        },
-        cfg.toasts,
-      );
+      // A notification can come from a usage window OR from context size / keep-warm giving
+      // up, which have no window and no percentage — render those from n.reason instead of
+      // printing "Usage limit 0%".
+      const pct = n.pct != null ? `${Math.round(n.pct)}%` : null;
+      let title: string;
+      let message: string;
+      if (n.level === "act") {
+        // Echo the path the instruction actually names, so a misconfigured handoffPath is
+        // visible before you go looking for a file that was written somewhere else.
+        const did = n.action === "handoff" ? `update ${n.handoffPath ?? "HANDOFF.md"}` : "capture context";
+        title = pct && win ? `Usage limit ${pct} — wrapping up` : "Capturing state — safe to /clear after";
+        message =
+          pct && win
+            ? `${who}: ${win} limit nearly exhausted (resets ${resets}). Claude will be told to ${did} and wrap up.`
+            : `${who}: ${n.reason ?? "this session should capture its state now"}. Claude will be told to ${did} — then you can /clear and resume from it.`;
+      } else {
+        title = pct ? `Usage limit ${pct}` : "Usage limit";
+        message = pct && win ? `${who}: ${win} limit at ${pct} (resets ${resets}).` : `${who}: ${n.reason ?? "approaching a limit"}.`;
+      }
+      toast({ title, message }, cfg.toasts);
       if (s) stateWriter.writeSession(s);
     },
   });
@@ -225,6 +236,12 @@ export async function main(): Promise<void> {
     });
   server.handlers.guardianAck = (sid, action) => {
     const ok = guardian.ack(sid, action);
+    const s = tracker.get(sid);
+    if (ok && s) stateWriter.writeSession(s);
+    return ok;
+  };
+  server.handlers.guardianResumeShown = (sid) => {
+    const ok = guardian.resumeShown(sid);
     const s = tracker.get(sid);
     if (ok && s) stateWriter.writeSession(s);
     return ok;
@@ -254,8 +271,33 @@ export async function main(): Promise<void> {
         );
       }
     },
+    // At the ping cap on an escalating tier, stop buying time and externalize the state
+    // instead: the guardian's existing one-shot channel delivers the HANDOFF.md instruction.
+    onEscalate: (sid, reason) => {
+      if (
+        !guardian.armHandoff(
+          sid,
+          "keepwarm-cap",
+          reason,
+          "keep-warm has stopped pinging (ping cap reached), so the prompt cache will lapse shortly and the whole context will have to be re-sent",
+        )
+      )
+        return;
+      const s = tracker.get(sid);
+      if (s) stateWriter.writeSession(s);
+      const handoffPath = s?.guardian.pendingHandoffPath ?? cfg.guardian.handoffPath;
+      toast(
+        { title: "Writing handoff", message: `${s?.projectSlug ?? sid}: ${reason}. Claude will write ${handoffPath} so you can /clear and resume cheaply.` },
+        cfg.toasts,
+      );
+    },
   });
-  tracker.on("assistantTurn", ({ sessionId, entry }) => keepwarm.onAssistantTurn(sessionId, entry));
+  tracker.on("assistantTurn", ({ sessionId, entry }) => {
+    keepwarm.onAssistantTurn(sessionId, entry);
+    // Context-size handoff trigger — the only guardian path that works on a seat with
+    // no usage windows to read.
+    guardian.onAssistantTurn(sessionId);
+  });
   server.handlers.keepwarmAuthorize = (sid) => keepwarm.authorize(sid);
   server.handlers.keepwarmSetArmed = (sid, armed) => keepwarm.setArmed(sid, armed);
   server.handlers.keepwarmBreakEven = (sid) => ({
@@ -306,6 +348,9 @@ export async function main(): Promise<void> {
 
   // Startup: recover cumulative state from DB, then backfill new lines, then go live.
   tracker.restoreFromStore();
+  // Before the backfill: a replayed turn re-enters guardian.onAssistantTurn, which must see a
+  // restored pending action rather than arm a second one behind it.
+  for (const s of guardian.restorePending()) stateWriter.writeSession(s);
   await watcher.start();
   for (const s of tracker.all) stateWriter.writeSession(s);
   await server.listen();

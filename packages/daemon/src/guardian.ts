@@ -23,11 +23,17 @@ interface CourierPayload {
 
 export interface GuardianNotification {
   sessionId: string;
-  window: "five_hour" | "seven_day";
-  pct: number;
+  /** Null for triggers that aren't usage-window based (context size, keep-warm cap). */
+  window: "five_hour" | "seven_day" | null;
+  /** Null when there is no percentage to report — don't render "0%". */
+  pct: number | null;
   resetsAt: number | null;
   level: "notify" | "act";
   action: "wrapup" | "handoff" | null;
+  /** Human-readable cause; present on every "act" notification. */
+  reason?: string;
+  /** Resolved absolute path of the handoff the instruction names, when the action writes one. */
+  handoffPath?: string;
 }
 
 /**
@@ -165,10 +171,166 @@ export class Guardian {
     if (pct >= actPct && (action === "wrapup" || action === "handoff")) {
       if (this.once(state.sessionId, window, resetsAt, "act")) {
         state.guardian.pendingAction = action;
+        state.guardian.pendingReason = `the user's subscription usage limit is nearly exhausted (${Math.round(pct)}% of the ${
+          window === "five_hour" ? "5-hour" : "7-day"
+        } window)`;
+        state.guardian.pendingHandoffPath = this.handoffPathFor(state);
+        this.persistPending(state);
         this.store.logEvent("guardian_armed", state.sessionId, { window, pct, action });
-        this.onNotify({ sessionId: state.sessionId, window, pct, resetsAt, level: "act", action });
+        this.onNotify({
+          sessionId: state.sessionId,
+          window,
+          pct,
+          resetsAt,
+          level: "act",
+          action,
+          reason: state.guardian.pendingReason ?? undefined,
+          handoffPath: state.guardian.pendingHandoffPath ?? undefined,
+        });
       }
     }
+  }
+
+  /**
+   * Arm a one-shot handoff for a reason that isn't a usage window — the keep-warm ping cap,
+   * or a context size past `guardian.handoffAtContextTokens`. Reuses the same pendingAction
+   * channel the hooks already drain, so delivery, ack and one-shot semantics are unchanged.
+   *
+   * Keyed on `reasonKey` rather than a reset window, so each distinct trigger fires once per
+   * session. Returns true if this call armed it.
+   */
+  armHandoff(sessionId: string, reasonKey: string, detail?: string, humanReason?: string): boolean {
+    const { action } = this.cfg.guardian;
+    // "notify-only" deliberately never injects an instruction; honor that here too.
+    if (action !== "wrapup" && action !== "handoff") return false;
+    const state = this.tracker.get(sessionId);
+    if (!state) return false;
+    // Never stack on top of an undelivered instruction.
+    if (state.guardian.pendingAction) return false;
+    if (!this.once(sessionId, `reason:${reasonKey}`, null, "act")) return false;
+    state.guardian.pendingAction = action;
+    // Never fall back to the usage-limit wording: these triggers have nothing to do with
+    // usage windows, and on a fixed-rate seat there is no window to be near the end of.
+    state.guardian.pendingReason = humanReason ?? detail ?? "this session should capture its state now";
+    state.guardian.pendingHandoffPath = this.handoffPathFor(state);
+    this.persistPending(state);
+    this.store.logEvent("guardian_armed", sessionId, { reason: reasonKey, detail, action });
+    // window/pct are null: there is no usage window behind this trigger, and passing 0
+    // made the toast read "Usage limit 0% — wrapping up".
+    this.onNotify({
+      sessionId,
+      window: null,
+      pct: null,
+      resetsAt: null,
+      level: "act",
+      action,
+      reason: state.guardian.pendingReason ?? undefined,
+      handoffPath: state.guardian.pendingHandoffPath ?? undefined,
+    });
+    return true;
+  }
+
+  /**
+   * Context-size trigger, called per assistant turn. Independent of usage windows, which is
+   * what makes it the useful one on a fixed-token-rate seat: there is no percentage to watch,
+   * only a context that has grown expensive to keep carrying.
+   */
+  onAssistantTurn(sessionId: string): void {
+    const limit = this.cfg.guardian.handoffAtContextTokens;
+    if (limit == null) return;
+    const state = this.tracker.get(sessionId);
+    if (!state || state.prefixTokens < limit) return;
+    this.armHandoff(
+      sessionId,
+      `context:${limit}`,
+      `prefix ${state.prefixTokens} tokens >= ${limit}`,
+      `this session's context has grown to ${Math.round(state.prefixTokens / 1000)}K tokens, which is expensive to keep re-reading every turn`,
+    );
+  }
+
+  /**
+   * Persist the armed-but-undelivered block. The one-shot key in `meta` outlives the process
+   * while the instruction itself lived only in memory, so a daemon restart between arming and
+   * delivery dropped the handoff AND left the key behind — the trigger could then never fire
+   * again for that (session, threshold). Observed live: a restart at 20:03 silently ate a
+   * handoff armed at 20:02. Persisting the block is the narrow fix; moving the one-shot key to
+   * delivery time instead would re-arm on every sweep until a surface picked it up, which on
+   * the usage-window path is a toast per sweep.
+   */
+  private persistPending(state: SessionState): void {
+    const g = state.guardian;
+    if (!g.pendingAction && !g.resumePrompt) {
+      this.store.delMeta(`guardian_pending:${state.sessionId}`);
+      return;
+    }
+    this.store.setMeta(
+      `guardian_pending:${state.sessionId}`,
+      JSON.stringify({
+        pendingAction: g.pendingAction,
+        pendingReason: g.pendingReason,
+        pendingHandoffPath: g.pendingHandoffPath,
+        resumePrompt: g.resumePrompt,
+      }),
+    );
+  }
+
+  /**
+   * Re-attach any undelivered instruction (or unshown resume prompt) to its session after a
+   * restart. Call once at startup, AFTER the tracker has restored its sessions and BEFORE the
+   * backfill replays turns — a replayed turn re-enters `onAssistantTurn`, which must see the
+   * pending action so it doesn't stack a second one on top. Returns the sessions it changed.
+   */
+  restorePending(): SessionState[] {
+    const changed: SessionState[] = [];
+    for (const state of this.tracker.all) {
+      const raw = this.store.getMeta(`guardian_pending:${state.sessionId}`);
+      if (!raw) continue;
+      let saved: Partial<SessionState["guardian"]>;
+      try {
+        saved = JSON.parse(raw) as Partial<SessionState["guardian"]>;
+      } catch {
+        this.store.delMeta(`guardian_pending:${state.sessionId}`);
+        continue;
+      }
+      const action = saved.pendingAction;
+      state.guardian.pendingAction = action === "wrapup" || action === "handoff" ? action : null;
+      state.guardian.pendingReason = saved.pendingReason ?? null;
+      state.guardian.pendingHandoffPath = saved.pendingHandoffPath ?? null;
+      state.guardian.resumePrompt = saved.resumePrompt ?? null;
+      changed.push(state);
+    }
+    return changed;
+  }
+
+  /**
+   * Resolve `guardian.handoffPath` against the session's own cwd, so the instruction can
+   * name an exact file. When the cwd is unknown (a session seen only through the
+   * transcript, before any hook has reported one) the configured path is handed over
+   * as-is and the model resolves it itself — the pre-existing behavior, not a regression.
+   */
+  private handoffPathFor(state: SessionState): string {
+    const configured = this.cfg.guardian.handoffPath || "HANDOFF.md";
+    if (path.isAbsolute(configured)) return configured;
+    return state.cwd ? path.resolve(state.cwd, configured) : configured;
+  }
+
+  /**
+   * The one output aimed at the human rather than at Claude: a prompt they can paste into
+   * a fresh session. Built here because this is where the resolved path lives, and shown by
+   * the Stop hook at the END of the turn that delivered the instruction — by which point
+   * Claude has actually written the handoff, so the prompt isn't pointing at a file that
+   * doesn't exist yet.
+   *
+   * Handoff only. A "wrapup" spreads its state across whatever docs the project already has,
+   * so there is no single path to point a resume prompt at; inventing one would be worse
+   * than saying nothing.
+   */
+  private resumePromptFor(action: string, handoffPath: string | null): string | null {
+    if (action !== "handoff" || !handoffPath) return null;
+    return (
+      `Read ${handoffPath} and pick up where it leaves off — start from its next-actions section. ` +
+      `Trust what it records instead of re-deriving it, and tell me if anything in it contradicts the code.`
+    );
   }
 
   /** True exactly once per (session, window, resets_at, level). */
@@ -179,12 +341,32 @@ export class Guardian {
     return true;
   }
 
-  /** Hook acknowledged delivery: clear pending so it can never repeat. */
+  /**
+   * Hook acknowledged delivery: clear pending so it can never repeat, and hand the human
+   * their resume prompt. Delivery is the right moment to arm that prompt — not arming —
+   * because until a surface has actually injected the instruction, nothing has been asked
+   * of Claude and there is nothing for the human to resume from.
+   */
   ack(sessionId: string, action: string): boolean {
     const state = this.tracker.get(sessionId);
     if (!state || state.guardian.pendingAction !== action) return false;
+    const resume = this.resumePromptFor(action, state.guardian.pendingHandoffPath);
     state.guardian.pendingAction = null;
-    this.store.logEvent("guardian_delivered", sessionId, { action });
+    state.guardian.pendingReason = null;
+    state.guardian.pendingHandoffPath = null;
+    state.guardian.resumePrompt = resume;
+    this.persistPending(state);
+    this.store.logEvent("guardian_delivered", sessionId, { action, resumePrompt: resume != null });
+    return true;
+  }
+
+  /** A surface showed the resume prompt to the human: clear it so it appears exactly once. */
+  resumeShown(sessionId: string): boolean {
+    const state = this.tracker.get(sessionId);
+    if (!state || !state.guardian.resumePrompt) return false;
+    state.guardian.resumePrompt = null;
+    this.persistPending(state);
+    this.store.logEvent("guardian_resume_shown", sessionId, {});
     return true;
   }
 }

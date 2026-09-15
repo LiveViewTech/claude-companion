@@ -113,9 +113,20 @@ function main() {
   const cost = officialCost ?? state?.sessionCostUsd;
   if (typeof cost === "number") parts.push(`$${cost.toFixed(2)}`);
 
-  // context usage
+  // Context usage, in absolute tokens rather than percent-of-window. On a 1M-context model
+  // a percentage reads reassuringly low exactly where it should alarm: 300K is "30% used"
+  // but costs ~3.5x per turn what 100K does, because every turn re-reads the whole prefix.
+  // The bands below track that cost curve, not the window; the percentage rides along in
+  // dim text for anyone who wants it.
+  const ctxTok = input.context_window?.total_input_tokens;
   const ctxPct = input.context_window?.used_percentage;
-  if (typeof ctxPct === "number") parts.push(`${DIM}ctx ${Math.round(ctxPct)}%${RESET}`);
+  if (typeof ctxTok === "number" && ctxTok > 0) {
+    const col = ctxTok >= 300_000 ? RED : ctxTok >= 200_000 ? YELLOW : "";
+    const pct = typeof ctxPct === "number" ? ` ${DIM}(${Math.round(ctxPct)}%)${RESET}` : "";
+    parts.push(`${col}ctx ${Math.round(ctxTok / 1000)}K${col ? RESET : ""}${pct}`);
+  } else if (typeof ctxPct === "number") {
+    parts.push(`${DIM}ctx ${Math.round(ctxPct)}%${RESET}`);
+  }
 
   // official usage limits (subscription only) — Claude Code's `rate_limits` field
   const rl = input.rate_limits;

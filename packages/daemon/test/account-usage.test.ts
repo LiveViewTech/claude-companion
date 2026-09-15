@@ -5,7 +5,7 @@ import path from "node:path";
 import { AccountUsagePoller, parseUsageResponse } from "../src/account-usage.ts";
 
 // Shape documented in jens-duttke/usage-monitor-for-claude docs/api-reference.md (2026-03).
-// used_credits / monthly_limit are cents ($239.28 of $500 here).
+// used_credits / monthly_limit are cents (the sample below is $239.28 of a $500 limit).
 const SAMPLE = {
   five_hour: { utilization: 48.0, resets_at: "2026-03-02T11:00:00.521744+00:00" },
   seven_day: { utilization: 64.0, resets_at: "2026-03-06T06:00:00.521764+00:00" },

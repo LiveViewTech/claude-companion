@@ -38,6 +38,15 @@
     <details class="collapsible" open>
       <summary>Controls <span class="soft">(saved to config.json; take effect immediately)</span></summary>
       <div class="ctrl-grid">
+      <div class="ctrl-row">
+      <label class="ctrl" title="Which account this machine's sessions run on. Only used to guess a session's cache TTL before its first cache write — once a turn reports the real tier, the measured value wins and this is ignored. Leave on auto unless you want keep-warm active from the very first turn.">
+        <span>Account type</span>
+        <select id="ctrl-account-type">
+          <option value="auto">auto — detect from usage</option>
+          <option value="pro">Claude Pro — 5 min cache</option>
+          <option value="enterprise">Enterprise / API — 1 hr cache</option>
+        </select>
+      </label>
       <label class="ctrl" title="Card density. Advanced is the full card. Simple keeps only session cost, cost/turn and cold re-write, stacked above the cache ring — everything else on the card is hidden.">
         <span>Card view</span>
         <select id="ctrl-cardview">
@@ -45,23 +54,31 @@
           <option value="simple">simple</option>
         </select>
       </label>
+      </div>
+      <div class="ctrl-row">
       <label class="ctrl" title="Master switch for cache keep-warm pings. When off, sessions can't be armed (the button above refuses). Keep-warm is opt-in per session even when this is on.">
         <input type="checkbox" id="ctrl-keepwarm" />
         <span>Keep-warm <span class="soft">— allow cache-keeping pings</span></span>
       </label>
-      <label class="ctrl" title="Let keep-warm arm 1h-TTL (subscription) sessions too. Off by default: a 1h cache rarely lapses between turns, so pinging it usually costs more than it saves. The per-session 'net' readout tells you if it's paying off.">
-        <input type="checkbox" id="ctrl-allow1h" />
-        <span>Keep-warm on 1h <span class="soft">— arm 1h-TTL sessions</span></span>
+      <label class="ctrl" title="Arm keep-warm on sessions measured at the 5-minute tier (Claude Pro). The 5m cache dies between turns on any real pause, so pinging is nearly always cheaper than the cold re-write it avoids.">
+        <input type="checkbox" id="ctrl-arm-5m" />
+        <span>Keep-warm 5m tier <span class="soft">— ping freely (Pro)</span></span>
       </label>
-      <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the usage-limit guardian.">
-        <input type="checkbox" id="ctrl-advisor" />
-        <span>Plan-first advisor <span class="soft">— nudge to plan mode</span></span>
+      <label class="ctrl" title="Arm keep-warm on sessions measured at the 1-hour tier (Enterprise / API). A 1h cache survives normal think-time, so pings only pay off across a real walk-away — use a low ping cap and let it escalate to a handoff rather than ping all night.">
+        <input type="checkbox" id="ctrl-arm-1h" />
+        <span>Keep-warm 1h tier <span class="soft">— ping across walk-aways</span></span>
       </label>
-      <label class="ctrl" title="Summarizes each session's prompts into the card's name (hover the name for a longer description). Runs `claude -p` headless on a cheap model via your existing claude login — a few tiny calls per active session per hour.">
-        <input type="checkbox" id="ctrl-naming" />
-        <span>Session naming <span class="soft">— AI names on cards</span></span>
+      <label class="ctrl" title="Pings allowed per idle period on the 1h tier before keep-warm stops. Each ping costs one full cache read; about a dozen cost more than the single cold re-write they were avoiding, so a low number (3) covers a meeting without bleeding overnight.">
+        <span>1h ping cap</span>
+        <input type="number" id="ctrl-cap-1h" min="1" max="48" step="1" />
       </label>
-      <label class="ctrl" title="Watches your subscription usage limits (the 5-hour / 7-day plan windows) and, near the cap, notifies and (optionally) asks Claude to capture context / write a handoff.">
+      <label class="ctrl" title="At the 1h ping cap, ask Claude to write HANDOFF.md instead of going quiet — so you can /clear and resume cheaply. Nothing is cleared automatically; you get a file and a notification. Turn this off to just stop pinging.">
+        <input type="checkbox" id="ctrl-escalate-1h" />
+        <span>Handoff at ping cap <span class="soft">— write HANDOFF.md, don't clear</span></span>
+      </label>
+      </div>
+      <div class="ctrl-row">
+      <label class="ctrl" title="Watches your subscription usage limits (the 5-hour / 7-day plan windows) and, near the cap, notifies and (optionally) asks Claude to capture context / write a handoff. Also the master switch for the two triggers above (ping cap, context size): on 'off' or 'notify only' they never inject an instruction.">
         <span>Usage-limit guardian</span>
         <select id="ctrl-guardian">
           <option value="off">off</option>
@@ -69,6 +86,24 @@
           <option value="wrapup">notify + wrap up</option>
           <option value="handoff">notify + handoff</option>
         </select>
+      </label>
+      <label class="ctrl" title="Ask Claude to write HANDOFF.md once a session's context passes this many tokens, so you can /clear at a natural stopping place. Independent of usage windows — the only guardian trigger that works on a fixed-token-rate seat. Blank switches it off. Nothing is cleared automatically.">
+        <span>Handoff at context</span>
+        <input type="number" id="ctrl-handoff-context" min="10000" step="10000" placeholder="off" />
+      </label>
+      <label class="ctrl" title="Which file the handoff is written to, relative to each session's own working directory (or an absolute path). The daemon resolves it per session and names the exact path in the instruction, so a monorepo session doesn't write its handoff into whichever package it was last working in. Blank resets to HANDOFF.md.">
+        <span>Handoff file</span>
+        <input type="text" id="ctrl-handoff-path" placeholder="HANDOFF.md" spellcheck="false" />
+      </label>
+      </div>
+      <div class="ctrl-row">
+      <label class="ctrl" title="Nudges toward plan mode on design/planning-shaped prompts early in a session. Does not affect the usage-limit guardian.">
+        <input type="checkbox" id="ctrl-advisor" />
+        <span>Plan-first advisor <span class="soft">— nudge to plan mode</span></span>
+      </label>
+      <label class="ctrl" title="Summarizes each session's prompts into the card's name (hover the name for a longer description). Runs `claude -p` headless on a cheap model via your existing claude login — a few tiny calls per active session per hour.">
+        <input type="checkbox" id="ctrl-naming" />
+        <span>Session naming <span class="soft">— AI names on cards</span></span>
       </label>
       <label class="ctrl" title="Plays a sound (via the turn-signal hook) when Claude finishes, asks a question, or needs permission. Off leaves the dashboard flash (below) untouched.">
         <input type="checkbox" id="ctrl-sound" />
@@ -78,6 +113,7 @@
         <input type="checkbox" id="ctrl-flash" />
         <span>Turn flash <span class="soft">— dashboard flash on your turn</span></span>
       </label>
+      </div>
       </div>
     </details>
   </section>

@@ -161,6 +161,29 @@ export interface SessionState {
     sevenDayResetsAt: number | null;
     /** Pending one-shot instruction for hooks to deliver ("wrapup" | "handoff" | null). */
     pendingAction: "wrapup" | "handoff" | null;
+    /**
+     * Why `pendingAction` was armed, as a clause the delivery surfaces splice into the
+     * instruction ("this session's context has grown to 372K tokens"). Required, because the
+     * same action arms for unrelated reasons — a usage window, context size, or keep-warm
+     * giving up — and an instruction that states the wrong cause is worse than a vague one:
+     * it tells Claude something false about the user's account.
+     */
+    pendingReason: string | null;
+    /**
+     * Absolute path the pending handoff instruction names, resolved by the daemon from
+     * `guardian.handoffPath` against this session's cwd. The Stop hook has no access to the
+     * config, so the resolved path travels with the session state rather than being
+     * re-derived (and re-guessed) at the delivery surface.
+     */
+    pendingHandoffPath: string | null;
+    /**
+     * Paste-ready prompt for the HUMAN, shown once at the end of the turn that delivered a
+     * handoff instruction. Everything else the guardian does instructs Claude; this is the
+     * only output aimed at the person who has to decide whether to `/clear`, and it exists
+     * so they don't have to compose a resume prompt by hand. Null when there is nothing to
+     * show; cleared as soon as a surface has shown it.
+     */
+    resumePrompt: string | null;
     updatedAt: number | null;
   };
   updatedAt: number;

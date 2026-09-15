@@ -89,6 +89,8 @@ export class Server {
   handlers: {
     advise?: (body: Record<string, unknown>) => unknown;
     guardianAck?: (sessionId: string, action: string) => boolean;
+    /** Stop hook showed the human their resume prompt: clear it so it appears once. */
+    guardianResumeShown?: (sessionId: string) => boolean;
     keepwarmAuthorize?: (sessionId: string) => { ping: boolean; reason?: string };
     keepwarmSetArmed?: (sessionId: string, armed: boolean) => unknown;
     keepwarmBreakEven?: (sessionId: string) => unknown;
@@ -174,6 +176,8 @@ export class Server {
       if (req.method === "POST" && p === "/advise") return void this.post(req, res, (b) => this.handlers.advise?.(b) ?? {});
       if (req.method === "POST" && p === "/guardian/ack")
         return void this.post(req, res, (b) => ({ ok: this.handlers.guardianAck?.(String(b["session_id"] ?? ""), String(b["action"] ?? "")) ?? false }));
+      if (req.method === "POST" && p === "/guardian/resume-shown")
+        return void this.post(req, res, (b) => ({ ok: this.handlers.guardianResumeShown?.(String(b["session_id"] ?? "")) ?? false }));
       if (req.method === "POST" && p === "/keepwarm/authorize")
         return void this.post(req, res, (b) => this.handlers.keepwarmAuthorize?.(String(b["session_id"] ?? "")) ?? { ping: false, reason: "keep-warm not available" });
       if (req.method === "POST" && p === "/keepwarm/arm")

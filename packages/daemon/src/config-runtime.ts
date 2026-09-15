@@ -2,10 +2,15 @@ import type { CccConfig } from "./config.ts";
 
 const GUARDIAN_ACTIONS: readonly CccConfig["guardian"]["action"][] = ["off", "notify-only", "wrapup", "handoff"];
 const CARD_VIEWS: readonly CccConfig["dashboard"]["cardView"][] = ["simple", "advanced"];
+const ACCOUNT_TYPES: readonly CccConfig["keepwarm"]["accountType"][] = ["auto", "pro", "enterprise"];
+const TTL_TIERS = ["5m", "1h"] as const;
 
 /** The live-updatable subset of the config the dashboard can PATCH (each block optional/partial). */
 export type ConfigUpdate = {
-  keepwarm?: Partial<CccConfig["keepwarm"]>;
+  keepwarm?: Omit<Partial<CccConfig["keepwarm"]>, "tiers"> & {
+    /** Patch one or both tiers, field by field. */
+    tiers?: Partial<Record<"5m" | "1h", Partial<CccConfig["keepwarm"]["tiers"]["5m"]>>>;
+  };
   advisor?: Partial<CccConfig["advisor"]>;
   guardian?: Partial<CccConfig["guardian"]>;
   naming?: Partial<CccConfig["naming"]>;
@@ -35,8 +40,20 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
     if (cfg.keepwarm.enabled && !updates.keepwarm.enabled) effects.keepwarmDisabled = true;
     cfg.keepwarm.enabled = updates.keepwarm.enabled;
   }
-  if (updates.keepwarm && typeof updates.keepwarm.allow1hArm === "boolean") {
-    cfg.keepwarm.allow1hArm = updates.keepwarm.allow1hArm;
+  if (updates.keepwarm && typeof updates.keepwarm.accountType === "string" && ACCOUNT_TYPES.includes(updates.keepwarm.accountType)) {
+    cfg.keepwarm.accountType = updates.keepwarm.accountType;
+  }
+  // Per-tier policy. Each tier is patched independently so the dashboard can send just
+  // the field that changed without having to echo the whole block back.
+  for (const tier of TTL_TIERS) {
+    const patch = updates.keepwarm?.tiers?.[tier];
+    if (!patch) continue;
+    const target = cfg.keepwarm.tiers[tier];
+    if (typeof patch.arm === "boolean") target.arm = patch.arm;
+    if (typeof patch.escalateToHandoff === "boolean") target.escalateToHandoff = patch.escalateToHandoff;
+    if (typeof patch.maxPingsPerIdle === "number" && patch.maxPingsPerIdle > 0) {
+      target.maxPingsPerIdle = Math.floor(patch.maxPingsPerIdle);
+    }
   }
 
   if (updates.naming && typeof updates.naming.enabled === "boolean") cfg.naming.enabled = updates.naming.enabled;
@@ -49,6 +66,20 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
   if (updates.guardian && typeof updates.guardian.action === "string" && GUARDIAN_ACTIONS.includes(updates.guardian.action)) {
     if (cfg.guardian.action !== "off" && updates.guardian.action === "off") effects.guardianDisabled = true;
     cfg.guardian.action = updates.guardian.action;
+  }
+  // Context-size handoff trigger. null (or 0/negative, which would fire on every turn)
+  // switches it off and leaves guardian purely usage-window driven.
+  if (updates.guardian && "handoffAtContextTokens" in updates.guardian) {
+    const v = updates.guardian.handoffAtContextTokens;
+    if (v === null) cfg.guardian.handoffAtContextTokens = null;
+    else if (typeof v === "number" && v > 0) cfg.guardian.handoffAtContextTokens = Math.floor(v);
+  }
+  // Where the handoff is written. Blank resets to the default rather than clearing it: an
+  // empty path would make the instruction name nothing at all, which is strictly worse than
+  // the old prose-only wording it replaced.
+  if (updates.guardian && typeof updates.guardian.handoffPath === "string") {
+    const v = updates.guardian.handoffPath.trim();
+    cfg.guardian.handoffPath = v === "" ? "HANDOFF.md" : v;
   }
 
   if (updates.turnSignal && typeof updates.turnSignal.sound === "boolean") cfg.turnSignal.sound = updates.turnSignal.sound;

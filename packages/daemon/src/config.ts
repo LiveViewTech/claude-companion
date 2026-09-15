@@ -2,6 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { appPaths } from "@ccc/core";
 
+/** Keep-warm behavior for one TTL tier. */
+export interface KeepWarmTierPolicy {
+  /** Allow keep-warm to arm at all on sessions measured at this tier. */
+  arm: boolean;
+  /** Soft cap on pings per idle period (user-overridable, never break-even-limited). */
+  maxPingsPerIdle: number;
+  /**
+   * On reaching the ping cap, arm a HANDOFF.md instruction instead of going quiet.
+   * Turns the cap from "stop saving money" into "switch to the cheaper strategy":
+   * past the cap, writing the handoff and clearing beats both pinging and re-writing.
+   */
+  escalateToHandoff: boolean;
+}
+
 export interface CccConfig {
   port: number;
   toasts: boolean;
@@ -12,7 +26,7 @@ export interface CccConfig {
    * ($X of $Y). ccc computes month-to-date from local transcripts — this is an
    * estimate that can read low if some sessions ran on another machine, and its
    * calendar-month window may differ from your Console billing cycle. Set to your
-   * Console spend limit ($200 here). null = show the running total with no cap.
+   * Console spend limit. null = show the running total with no cap.
    */
   monthlyBudgetUsd: number | null;
   /**
@@ -76,6 +90,25 @@ export interface CccConfig {
     action: "off" | "notify-only" | "wrapup" | "handoff";
     notifyPct: number;
     actPct: number;
+    /**
+     * Arm a handoff once a session's cacheable prefix passes this many tokens, independent
+     * of any usage window. This is the "find a good stopping place" trigger: past ~150K the
+     * per-turn cost of carrying the context exceeds what a fresh session plus a HANDOFF.md
+     * read would cost, so the cheapest move is to write the handoff and clear.
+     *
+     * Requires `action` to be "wrapup" or "handoff" (it reuses that one-shot delivery path).
+     * null disables the trigger, leaving guardian purely usage-window driven — which is the
+     * right setting on a fixed-token-rate seat with no usage windows to read.
+     */
+    handoffAtContextTokens: number | null;
+    /**
+     * Where the handoff lives, relative to the session's cwd (or absolute). Both delivery
+     * surfaces name this file, and the daemon resolves it against the session cwd before
+     * handing it over, so the model is told an exact path instead of resolving "HANDOFF.md"
+     * against whatever directory it happens to think it is in — which in a monorepo is a
+     * coin flip between the repo root and a package.
+     */
+    handoffPath: string;
   };
   keepwarm: {
     /**
@@ -85,14 +118,32 @@ export interface CccConfig {
      */
     enabled: boolean;
     /**
-     * Allow arming on 1h-TTL (subscription) sessions. Off by default because a 1h cache
-     * rarely lapses between turns, so pinging it usually costs more than the cold re-writes
-     * it avoids. Flip this on to keep-warm 1h sessions anyway (the net-savings readout still
-     * tells you whether it's paying off).
+     * Which account this machine's sessions run on. This ONLY seeds the expected TTL tier
+     * for a session that has not yet reported a cache write — the moment a turn carries
+     * `ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`, the measured tier wins and
+     * this is ignored. So a wrong setting here costs at most one idle period, never a
+     * mispriced ping, and a machine that switches between accounts still behaves correctly.
+     *
+     *   "auto"       — no seeding; wait for the first measured cache write (safest)
+     *   "pro"        — Claude Pro subscription seat: 5-minute cache
+     *   "enterprise" — Enterprise seat or API token: 1-hour cache
      */
-    allow1hArm: boolean;
-    /** Soft cap on pings per idle period (user-overridable, never break-even-limited). */
-    maxPingsPerIdle: number;
+    accountType: "auto" | "pro" | "enterprise";
+    /**
+     * Policy per TTL tier, keyed by the tier the session actually measured. The two tiers
+     * want opposite behavior, which is why this is not one global setting:
+     *
+     *  5m — the cache dies between turns on any real pause, so pinging is nearly always
+     *       cheaper than the cold re-write it avoids. Ping freely.
+     *  1h — the cache survives normal think-time, so pings only pay off across a genuine
+     *       walk-away. A ping costs a full cache read; roughly a dozen of them cost more
+     *       than the single re-write they were avoiding. So ping a few times to cover a
+     *       meeting, then stop and escalate to a handoff rather than bleed pings overnight.
+     */
+    tiers: {
+      "5m": KeepWarmTierPolicy;
+      "1h": KeepWarmTierPolicy;
+    };
   };
   /**
    * Plan-first advisor — nudges toward plan mode on design/planning-shaped prompts early
@@ -174,8 +225,18 @@ export const DEFAULTS: CccConfig = {
   pricing: { autoResolve: true, refreshDays: 7 },
   accountUsage: { enabled: true, pollSeconds: 300 },
   audit: { enabled: true, quietMinutes: 15, alertOnDrift: true },
-  guardian: { action: "notify-only", notifyPct: 80, actPct: 90 },
-  keepwarm: { enabled: true, allow1hArm: false, maxPingsPerIdle: 12 },
+  guardian: { action: "notify-only", notifyPct: 80, actPct: 90, handoffAtContextTokens: 150_000, handoffPath: "HANDOFF.md" },
+  keepwarm: {
+    enabled: true,
+    accountType: "auto",
+    tiers: {
+      // Unchanged from the pre-tier behavior: the 5m path is the one that was already armed.
+      "5m": { arm: true, maxPingsPerIdle: 12, escalateToHandoff: false },
+      // Previously refused outright (allow1hArm: false). Now armed with a low cap, because
+      // the measured failure mode on a 1h seat is walking away for hours, not slow turns.
+      "1h": { arm: true, maxPingsPerIdle: 3, escalateToHandoff: true },
+    },
+  },
   advisor: { enabled: true, nudgeEvery: 10 },
   naming: { enabled: true, model: "haiku" },
   turnSignal: {
@@ -197,6 +258,45 @@ export function configFile(): string {
   return path.join(appPaths().config, "config.json");
 }
 
+/**
+ * Shape of the pre-tier keepwarm block, still on disk in any config written before
+ * per-tier policy existed. `allow1hArm` was a single gate on the 1h tier and
+ * `maxPingsPerIdle` a single cap across both tiers.
+ */
+type LegacyKeepwarm = Partial<CccConfig["keepwarm"]> & {
+  allow1hArm?: boolean;
+  maxPingsPerIdle?: number;
+};
+
+/**
+ * Fold a pre-tier keepwarm block into the per-tier shape. The legacy keys are honored
+ * rather than discarded — a config that deliberately refused the 1h tier keeps refusing
+ * it until the user says otherwise — but only when `tiers` is absent, so a migrated
+ * config is never re-migrated on top of the user's later edits.
+ */
+function migrateKeepwarm(raw: LegacyKeepwarm | undefined): CccConfig["keepwarm"] {
+  const base: CccConfig["keepwarm"] = {
+    ...DEFAULTS.keepwarm,
+    ...(raw ?? {}),
+    tiers: {
+      "5m": { ...DEFAULTS.keepwarm.tiers["5m"], ...(raw?.tiers?.["5m"] ?? {}) },
+      "1h": { ...DEFAULTS.keepwarm.tiers["1h"], ...(raw?.tiers?.["1h"] ?? {}) },
+    },
+  };
+  if (raw && raw.tiers === undefined) {
+    if (typeof raw.allow1hArm === "boolean") base.tiers["1h"].arm = raw.allow1hArm;
+    if (typeof raw.maxPingsPerIdle === "number" && raw.maxPingsPerIdle > 0) {
+      const cap = Math.floor(raw.maxPingsPerIdle);
+      base.tiers["5m"].maxPingsPerIdle = cap;
+      base.tiers["1h"].maxPingsPerIdle = cap;
+    }
+  }
+  // The legacy keys are not part of CccConfig; drop them so saveConfig writes a clean file.
+  delete (base as LegacyKeepwarm).allow1hArm;
+  delete (base as LegacyKeepwarm).maxPingsPerIdle;
+  return base;
+}
+
 export function loadConfig(): CccConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(configFile(), "utf8")) as Partial<CccConfig>;
@@ -207,7 +307,7 @@ export function loadConfig(): CccConfig {
       accountUsage: { ...DEFAULTS.accountUsage, ...(raw.accountUsage ?? {}) },
       audit: { ...DEFAULTS.audit, ...(raw.audit ?? {}) },
       guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
-      keepwarm: { ...DEFAULTS.keepwarm, ...(raw.keepwarm ?? {}) },
+      keepwarm: migrateKeepwarm(raw.keepwarm as LegacyKeepwarm | undefined),
       advisor: { ...DEFAULTS.advisor, ...(raw.advisor ?? {}) },
       naming: { ...DEFAULTS.naming, ...(raw.naming ?? {}) },
       turnSignal: {

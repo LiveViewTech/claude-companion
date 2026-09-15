@@ -90,23 +90,104 @@ describe("KeepWarm gates", () => {
     expect(res.reason).toMatch(/disabled/);
   });
 
-  it("refuses to arm on the 1h tier with an explanation", () => {
-    tracker.ingest(turn({ uuid: "a", ts: "2026-07-11T10:00:00.000Z", w1h: 100_000 }), "proj", false);
-    const res = keepwarm.setArmed(SID, true) as { armed: boolean; reason: string };
-    expect(res.armed).toBe(false);
-    expect(res.reason).toMatch(/1h TTL/);
-  });
-
-  it("arms on the 1h tier when allow1hArm is enabled", () => {
+  it("refuses to arm on a tier whose policy disallows it", () => {
     const kw = new KeepWarm({
       tracker,
       store,
-      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, allow1hArm: true } },
+      cfg: {
+        ...DEFAULTS,
+        keepwarm: { ...DEFAULTS.keepwarm, tiers: { ...DEFAULTS.keepwarm.tiers, "1h": { ...DEFAULTS.keepwarm.tiers["1h"], arm: false } } },
+      },
+      onEvent: (kind, sid) => events.push({ kind, sid }),
+    });
+    tracker.ingest(turn({ uuid: "a", ts: "2026-07-11T10:00:00.000Z", w1h: 100_000 }), "proj", false);
+    const res = kw.setArmed(SID, true) as { armed: boolean; reason: string };
+    expect(res.armed).toBe(false);
+    expect(res.reason).toMatch(/off for 1h-TTL/);
+  });
+
+  it("arms on the 1h tier by default (walk-aways, not think-time, are what kill a 1h cache)", () => {
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);
+    const res = keepwarm.setArmed(SID, true) as { armed: boolean; reason: string };
+    expect(res.armed).toBe(true);
+  });
+
+  it("seeds the tier from accountType until a cache write is measured", () => {
+    const mk = (accountType: "auto" | "pro" | "enterprise") =>
+      new KeepWarm({
+        tracker,
+        store,
+        cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, accountType } },
+        onEvent: (kind, sid) => events.push({ kind, sid }),
+      });
+    // A turn with no cache write at all: nothing to measure.
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), read: 100_000, input: 0 }), "proj", true);
+    const s = tracker.get(SID)!;
+    expect(s.ttlTier).toBeNull();
+    expect(mk("auto").tierFor(s)).toBeNull();
+    expect(mk("pro").tierFor(s)).toBe("5m");
+    expect(mk("enterprise").tierFor(s)).toBe("1h");
+  });
+
+  it("a measured tier always beats the accountType hint", () => {
+    const kw = new KeepWarm({
+      tracker,
+      store,
+      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, accountType: "pro" } },
       onEvent: (kind, sid) => events.push({ kind, sid }),
     });
     tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);
-    const res = kw.setArmed(SID, true) as { armed: boolean; reason: string };
-    expect(res.armed).toBe(true);
+    expect(kw.tierFor(tracker.get(SID)!)).toBe("1h");
+  });
+
+  it("escalates to a handoff once the 1h ping cap is reached", () => {
+    const escalations: string[] = [];
+    const kw = new KeepWarm({
+      tracker,
+      store,
+      cfg: DEFAULTS,
+      onEvent: (kind, sid) => events.push({ kind, sid }),
+      onEscalate: (_sid, reason) => escalations.push(reason),
+    });
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);
+    kw.setArmed(SID, true);
+    const cap = DEFAULTS.keepwarm.tiers["1h"].maxPingsPerIdle;
+    for (let i = 0; i < cap; i++) {
+      expect(kw.authorize(SID).ping).toBe(true);
+      kw.onAssistantTurn(SID, turn({ uuid: `p${i}`, ts: new Date().toISOString(), read: 100_000, w1h: 50, output: 5 }));
+    }
+    expect(escalations).toHaveLength(0);
+    const denied = kw.authorize(SID);
+    expect(denied.ping).toBe(false);
+    expect(denied.reason).toMatch(/ping cap/);
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatch(/1h/);
+  });
+
+  it("does not escalate when the tier's escalateToHandoff is off", () => {
+    const escalations: string[] = [];
+    const kw = new KeepWarm({
+      tracker,
+      store,
+      cfg: {
+        ...DEFAULTS,
+        keepwarm: {
+          ...DEFAULTS.keepwarm,
+          tiers: { ...DEFAULTS.keepwarm.tiers, "1h": { ...DEFAULTS.keepwarm.tiers["1h"], escalateToHandoff: false } },
+        },
+      },
+      onEvent: (kind, sid) => events.push({ kind, sid }),
+      onEscalate: (_sid, reason) => escalations.push(reason),
+    });
+    tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);
+    kw.setArmed(SID, true);
+    const cap = DEFAULTS.keepwarm.tiers["1h"].maxPingsPerIdle;
+    for (let i = 0; i < cap; i++) {
+      kw.authorize(SID);
+      kw.onAssistantTurn(SID, turn({ uuid: `p${i}`, ts: new Date().toISOString(), read: 100_000, w1h: 50, output: 5 }));
+    }
+    expect(kw.authorize(SID).ping).toBe(false);
+    expect(escalations).toHaveLength(0);
   });
 
   it("refuses below the cacheable minimum", () => {
@@ -127,7 +208,7 @@ describe("KeepWarm gates", () => {
   it("authorizes pings up to the soft cap then stops", () => {
     tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w5: 100_000 }), "proj", true);
     keepwarm.setArmed(SID, true);
-    for (let i = 0; i < DEFAULTS.keepwarm.maxPingsPerIdle; i++) {
+    for (let i = 0; i < DEFAULTS.keepwarm.tiers["5m"].maxPingsPerIdle; i++) {
       expect(keepwarm.authorize(SID).ping).toBe(true);
       keepwarm.onAssistantTurn(SID, turn({ uuid: `p${i}`, ts: new Date().toISOString(), read: 100_000, w5: 50, output: 5 }));
     }
