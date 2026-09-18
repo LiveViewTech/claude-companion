@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only by default. Nothing here publishes, comments, or pushes; a public
+# repo runs this workflow against forks, so the token should be able to do
+# nothing but check out the code.
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One red platform shouldn't hide the state of the others.
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is where this runs day to day, so it guards both the current
+          # Node and the floor in package.json's engines (>=22.18).
+          - os: ubuntu-latest
+            node: 24
+          - os: ubuntu-latest
+            node: 22
+          # ccc branches on platform for state dirs, sound players and the
+          # Windows toast path. Those branches are only ever exercised here --
+          # see packages/hooks/test/stop-keepwarm.test.mjs.
+          - os: windows-latest
+            node: 24
+          - os: macos-latest
+            node: 24
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # ci, not install: fails on a lockfile that has drifted from package.json
+      # instead of quietly rewriting it.
+      - run: npm ci
+
+      - run: npm test
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
