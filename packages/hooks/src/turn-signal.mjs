@@ -89,18 +89,22 @@ const LINUX_EVENTS = {
 const LINUX_EXTS = [".oga", ".ogg", ".wav"];
 
 /** First readable file from the XDG sound themes for `reason`, or "" when none is installed. */
+// posix.join, not join: every path here is a Linux one (the roots below are POSIX literals), so
+// the separator must not follow the host. On Linux the two are identical; off it, plain join()
+// emits backslashes and every lookup misses. Unreachable in production — defaultSound() returns
+// in its win32/darwin branches before it gets here — but it made the tests platform-dependent.
 export function linuxThemeSound(reason, exists = (f) => fs.existsSync(f)) {
   const roots = [
-    path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "sounds"),
+    path.posix.join(process.env.XDG_DATA_HOME ?? path.posix.join(os.homedir(), ".local", "share"), "sounds"),
     "/usr/local/share/sounds",
     "/usr/share/sounds",
   ];
   for (const event of LINUX_EVENTS[reason] ?? LINUX_EVENTS.done) {
     for (const root of roots) {
       for (const theme of LINUX_THEMES) {
-        for (const dir of [path.join(root, theme, "stereo"), path.join(root, theme)]) {
+        for (const dir of [path.posix.join(root, theme, "stereo"), path.posix.join(root, theme)]) {
           for (const ext of LINUX_EXTS) {
-            const f = path.join(dir, event + ext);
+            const f = path.posix.join(dir, event + ext);
             if (exists(f)) return f;
           }
         }
