@@ -21,8 +21,5 @@
     "happy-dom": "^20.10.6",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
-  },
-  "allowScripts": {
-    "esbuild@0.28.1": true
   }
 }
