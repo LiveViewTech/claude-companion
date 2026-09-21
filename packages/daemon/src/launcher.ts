@@ -30,10 +30,18 @@ export function terminalSpecs(platform: NodeJS.Platform, cwd: string, sessionId:
   }
   const sh = `${resume}; exec $SHELL`;
   return [
-    { cmd: "x-terminal-emulator", args: ["-e", `bash -lc '${sh}'`], cwd },
+    // `--` (raw argv, no shell re-parsing), not `-e`: the x-terminal-emulator alternative on
+    // modern GNOME desktops resolves to Ptyxis, which has no `-e` compatibility shim at all —
+    // it silently no-ops or shows its own "failed to find executable" error, since a packed
+    // `-e 'bash -lc ...'` string is never split back into argv. `--` is what actually spawns
+    // a pty on Ptyxis (verified), and every terminal that accepts discrete `-e` args also
+    // accepts `--` the same way, so this isn't a narrower bet than `-e` was.
+    { cmd: "x-terminal-emulator", args: ["--", "bash", "-lc", sh], cwd },
     { cmd: "gnome-terminal", args: [`--working-directory=${cwd}`, "--", "bash", "-lc", sh] },
     { cmd: "konsole", args: ["--workdir", cwd, "-e", "bash", "-lc", sh] },
-    { cmd: "xterm", args: ["-e", `bash -lc '${sh}'`], cwd },
+    // Real xterm's `-e` must be the last flag and is NOT shell-reparsed — it execvp's the
+    // remaining argv directly, so these must stay as discrete elements, never one packed string.
+    { cmd: "xterm", args: ["-e", "bash", "-lc", sh], cwd },
   ];
 }
 

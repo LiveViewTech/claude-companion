@@ -98,4 +98,20 @@ describe("terminalSpecs", () => {
     expect(linux.length).toBeGreaterThan(1);
     expect(linux.every((s) => s.args.join(" ").includes("claude --resume abc"))).toBe(true);
   });
+
+  it("passes bash -lc's command as discrete argv elements, never packed into one string", () => {
+    // A packed `-e "bash -lc '...'"` string makes execvp-style terminals (Ptyxis, real xterm)
+    // look for a literal executable named "bash -lc '...'" and fail — this pins the fix.
+    for (const spec of terminalSpecs("linux", "/home/n/p", "abc")) {
+      expect(spec.args).not.toEqual(expect.arrayContaining([expect.stringMatching(/^bash -lc /)]));
+      if (spec.args.includes("-lc") || spec.args.includes("bash")) {
+        expect(spec.args).toEqual(expect.arrayContaining(["bash", "-lc"]));
+      }
+    }
+  });
+
+  it("uses -- (not -e) for the x-terminal-emulator alias, since Ptyxis has no -e shim", () => {
+    const spec = terminalSpecs("linux", "/home/n/p", "abc").find((s) => s.cmd === "x-terminal-emulator");
+    expect(spec?.args.slice(0, 4)).toEqual(["--", "bash", "-lc", expect.stringContaining("claude --resume abc")]);
+  });
 });
