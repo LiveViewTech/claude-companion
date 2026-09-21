@@ -67,13 +67,6 @@ export function applyConfigUpdate(cfg: CccConfig, updates: ConfigUpdate): Config
     if (cfg.guardian.action !== "off" && updates.guardian.action === "off") effects.guardianDisabled = true;
     cfg.guardian.action = updates.guardian.action;
   }
-  // Context-size handoff trigger. null (or 0/negative, which would fire on every turn)
-  // switches it off and leaves guardian purely usage-window driven.
-  if (updates.guardian && "handoffAtContextTokens" in updates.guardian) {
-    const v = updates.guardian.handoffAtContextTokens;
-    if (v === null) cfg.guardian.handoffAtContextTokens = null;
-    else if (typeof v === "number" && v > 0) cfg.guardian.handoffAtContextTokens = Math.floor(v);
-  }
   // Where the handoff is written. Blank resets to the default rather than clearing it: an
   // empty path would make the instruction name nothing at all, which is strictly worse than
   // the old prose-only wording it replaced.

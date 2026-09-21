@@ -87,10 +87,6 @@
           <option value="handoff">notify + handoff</option>
         </select>
       </label>
-      <label class="ctrl" title="Ask Claude to write HANDOFF.md once a session's context passes this many tokens, so you can /clear at a natural stopping place. Independent of usage windows — the only guardian trigger that works on a fixed-token-rate seat. Blank switches it off. Nothing is cleared automatically.">
-        <span>Handoff at context</span>
-        <input type="number" id="ctrl-handoff-context" min="10000" step="10000" placeholder="off" />
-      </label>
       <label class="ctrl" title="Which file the handoff is written to, relative to each session's own working directory (or an absolute path). The daemon resolves it per session and names the exact path in the instruction, so a monorepo session doesn't write its handoff into whichever package it was last working in. Blank resets to HANDOFF.md.">
         <span>Handoff file</span>
         <input type="text" id="ctrl-handoff-path" placeholder="HANDOFF.md" spellcheck="false" />

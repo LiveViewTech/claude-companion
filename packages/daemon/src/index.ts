@@ -294,9 +294,6 @@ export async function main(): Promise<void> {
   });
   tracker.on("assistantTurn", ({ sessionId, entry }) => {
     keepwarm.onAssistantTurn(sessionId, entry);
-    // Context-size handoff trigger — the only guardian path that works on a seat with
-    // no usage windows to read.
-    guardian.onAssistantTurn(sessionId);
   });
   server.handlers.keepwarmAuthorize = (sid) => keepwarm.authorize(sid);
   server.handlers.keepwarmSetArmed = (sid, armed) => keepwarm.setArmed(sid, armed);
@@ -348,8 +345,8 @@ export async function main(): Promise<void> {
 
   // Startup: recover cumulative state from DB, then backfill new lines, then go live.
   tracker.restoreFromStore();
-  // Before the backfill: a replayed turn re-enters guardian.onAssistantTurn, which must see a
-  // restored pending action rather than arm a second one behind it.
+  // Before the backfill: a replayed turn can re-enter keepwarm's onEscalate -> guardian.armHandoff,
+  // which must see a restored pending action rather than arm a second one behind it.
   for (const s of guardian.restorePending()) stateWriter.writeSession(s);
   await watcher.start();
   for (const s of tracker.all) stateWriter.writeSession(s);
