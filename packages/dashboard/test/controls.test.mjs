@@ -277,13 +277,13 @@ describe("keep-warm / guardian control dependencies", () => {
       tiers: { "5m": { arm: true, maxPingsPerIdle: 12, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 3, escalateToHandoff: true } },
       ...keepwarm,
     },
-    guardian: { action: "notify-only", notifyPct: 80, actPct: 90, handoffAtContextTokens: 150000, handoffPath: "HANDOFF.md", ...guardian },
+    guardian: { action: "notify-only", notifyPct: 80, actPct: 90, handoffPath: "HANDOFF.md", ...guardian },
   });
   const dis = (id) => document.getElementById(id).disabled;
   const dimmed = (id) => document.getElementById(id).parentElement.classList.contains("ctrl-off");
 
   it("index.html exposes the new keep-warm + handoff controls", () => {
-    for (const id of ["ctrl-account-type", "ctrl-arm-5m", "ctrl-arm-1h", "ctrl-cap-1h", "ctrl-escalate-1h", "ctrl-handoff-context", "ctrl-handoff-path"]) {
+    for (const id of ["ctrl-account-type", "ctrl-arm-5m", "ctrl-arm-1h", "ctrl-cap-1h", "ctrl-escalate-1h", "ctrl-handoff-path"]) {
       expect(document.getElementById(id), id).not.toBeNull();
     }
     const opts = [...document.getElementById("ctrl-account-type").options].map((o) => o.value);
@@ -301,8 +301,6 @@ describe("keep-warm / guardian control dependencies", () => {
     expect(dimmed("ctrl-arm-1h")).toBe(true);
     // Account type still drives break-even / ping-cost readouts, so it stays live.
     expect(dis("ctrl-account-type")).toBe(false);
-    // The context trigger is independent of keep-warm — that's the whole point of it.
-    expect(dis("ctrl-handoff-context")).toBe(false);
   });
 
   it("enables the tier controls when keep-warm is on", async () => {
@@ -315,11 +313,10 @@ describe("keep-warm / guardian control dependencies", () => {
     expect(dimmed("ctrl-arm-1h")).toBe(false);
   });
 
-  it("disables both handoff triggers when the guardian can't deliver", async () => {
+  it("disables the escalation handoff trigger when the guardian can't deliver", async () => {
     for (const action of ["off", "notify-only"]) {
       globalThis.fetch = vi.fn(async () => jsonResponse(cfg({ enabled: true }, { action })));
       await controls.refreshControls();
-      expect(dis("ctrl-handoff-context"), action).toBe(true);
       expect(dis("ctrl-escalate-1h"), action).toBe(true);
       // Pinging itself still applies — only the instruction delivery is gated.
       expect(dis("ctrl-arm-1h"), action).toBe(false);
@@ -340,10 +337,10 @@ describe("keep-warm / guardian control dependencies", () => {
     expect(dis("ctrl-escalate-1h")).toBe(true);
   });
 
-  it("reflects the per-tier values and the context threshold", async () => {
+  it("reflects the per-tier values", async () => {
     globalThis.fetch = vi.fn(async () =>
       jsonResponse(
-        cfg({ enabled: true, accountType: "pro", tiers: { "5m": { arm: false, maxPingsPerIdle: 9, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 4, escalateToHandoff: false } } }, { action: "handoff", handoffAtContextTokens: null }),
+        cfg({ enabled: true, accountType: "pro", tiers: { "5m": { arm: false, maxPingsPerIdle: 9, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 4, escalateToHandoff: false } } }, { action: "handoff" }),
       ),
     );
     await controls.refreshControls();
@@ -351,8 +348,6 @@ describe("keep-warm / guardian control dependencies", () => {
     expect(document.getElementById("ctrl-arm-5m").checked).toBe(false);
     expect(document.getElementById("ctrl-cap-1h").value).toBe("4");
     expect(document.getElementById("ctrl-escalate-1h").checked).toBe(false);
-    // null renders as an empty box, which is how the user switches it off.
-    expect(document.getElementById("ctrl-handoff-context").value).toBe("");
   });
 
   it("reflects the handoff path and dims it on any action that writes no handoff", async () => {
@@ -368,7 +363,7 @@ describe("keep-warm / guardian control dependencies", () => {
     expect(dimmed("ctrl-handoff-path")).toBe(true);
   });
 
-  it("posts null for a blank context box and a tier patch for the cap", async () => {
+  it("posts a tier patch for the cap", async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse(cfg({ enabled: true }, { action: "handoff" })));
     await controls.refreshControls();
     controls.wireControls();
@@ -377,15 +372,11 @@ describe("keep-warm / guardian control dependencies", () => {
       calls.push(JSON.parse(opts.body));
       return jsonResponse(cfg({ enabled: true }, { action: "handoff" }));
     });
-    const hctx = document.getElementById("ctrl-handoff-context");
-    hctx.value = "";
-    hctx.onchange();
     const cap = document.getElementById("ctrl-cap-1h");
     cap.value = "3";
     cap.onchange();
     await tick();
-    expect(calls[0]).toEqual({ guardian: { handoffAtContextTokens: null } });
-    expect(calls[1]).toEqual({ keepwarm: { tiers: { "1h": { maxPingsPerIdle: 3 } } } });
+    expect(calls[0]).toEqual({ keepwarm: { tiers: { "1h": { maxPingsPerIdle: 3 } } } });
   });
 
   it("posts the handoff path verbatim, blank included — the daemon owns the reset", async () => {
@@ -412,7 +403,7 @@ describe("keep-warm / guardian control dependencies", () => {
 describe("collapsed sections survive unrelated setting changes", () => {
   const baseCfg = (cardView = "advanced") => ({
     keepwarm: { enabled: true, accountType: "auto", tiers: { "5m": { arm: true, maxPingsPerIdle: 12, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 3, escalateToHandoff: true } } },
-    guardian: { action: "handoff", notifyPct: 80, actPct: 90, handoffAtContextTokens: 150000 },
+    guardian: { action: "handoff", notifyPct: 80, actPct: 90 },
     advisor: { enabled: true },
     naming: { enabled: true },
     turnSignal: { sound: true, flash: true },

@@ -23,7 +23,7 @@ interface CourierPayload {
 
 export interface GuardianNotification {
   sessionId: string;
-  /** Null for triggers that aren't usage-window based (context size, keep-warm cap). */
+  /** Null for triggers that aren't usage-window based (e.g. the keep-warm cap). */
   window: "five_hour" | "seven_day" | null;
   /** Null when there is no percentage to report — don't render "0%". */
   pct: number | null;
@@ -192,9 +192,9 @@ export class Guardian {
   }
 
   /**
-   * Arm a one-shot handoff for a reason that isn't a usage window — the keep-warm ping cap,
-   * or a context size past `guardian.handoffAtContextTokens`. Reuses the same pendingAction
-   * channel the hooks already drain, so delivery, ack and one-shot semantics are unchanged.
+   * Arm a one-shot handoff for a reason that isn't a usage window — currently just the
+   * keep-warm ping cap. Reuses the same pendingAction channel the hooks already drain, so
+   * delivery, ack and one-shot semantics are unchanged.
    *
    * Keyed on `reasonKey` rather than a reset window, so each distinct trigger fires once per
    * session. Returns true if this call armed it.
@@ -231,24 +231,6 @@ export class Guardian {
   }
 
   /**
-   * Context-size trigger, called per assistant turn. Independent of usage windows, which is
-   * what makes it the useful one on a fixed-token-rate seat: there is no percentage to watch,
-   * only a context that has grown expensive to keep carrying.
-   */
-  onAssistantTurn(sessionId: string): void {
-    const limit = this.cfg.guardian.handoffAtContextTokens;
-    if (limit == null) return;
-    const state = this.tracker.get(sessionId);
-    if (!state || state.prefixTokens < limit) return;
-    this.armHandoff(
-      sessionId,
-      `context:${limit}`,
-      `prefix ${state.prefixTokens} tokens >= ${limit}`,
-      `this session's context has grown to ${Math.round(state.prefixTokens / 1000)}K tokens, which is expensive to keep re-reading every turn`,
-    );
-  }
-
-  /**
    * Persist the armed-but-undelivered block. The one-shot key in `meta` outlives the process
    * while the instruction itself lived only in memory, so a daemon restart between arming and
    * delivery dropped the handoff AND left the key behind — the trigger could then never fire
@@ -277,8 +259,9 @@ export class Guardian {
   /**
    * Re-attach any undelivered instruction (or unshown resume prompt) to its session after a
    * restart. Call once at startup, AFTER the tracker has restored its sessions and BEFORE the
-   * backfill replays turns — a replayed turn re-enters `onAssistantTurn`, which must see the
-   * pending action so it doesn't stack a second one on top. Returns the sessions it changed.
+   * backfill replays turns — a replayed turn can re-enter `armHandoff` (via keep-warm's
+   * escalation), which must see the pending action so it doesn't stack a second one on top.
+   * Returns the sessions it changed.
    */
   restorePending(): SessionState[] {
     const changed: SessionState[] = [];

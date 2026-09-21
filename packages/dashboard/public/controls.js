@@ -49,8 +49,6 @@ function syncDependentControls(cfg) {
   setCtrlEnabled($("ctrl-cap-1h"), kwOn);
   // Needs both: the cap is only reached inside gate(), and delivery needs the guardian.
   setCtrlEnabled($("ctrl-escalate-1h"), kwOn && guardianDelivers);
-  // Independent of keep-warm — this is the trigger that still works with it off.
-  setCtrlEnabled($("ctrl-handoff-context"), guardianDelivers);
   // Only the handoff action writes a file, so the path means nothing on "wrapup".
   setCtrlEnabled($("ctrl-handoff-path"), action === "handoff");
 }
@@ -63,18 +61,12 @@ function syncKeepwarmControls(cfg) {
   const arm1 = $("ctrl-arm-1h");
   const cap1 = $("ctrl-cap-1h");
   const esc1 = $("ctrl-escalate-1h");
-  const hctx = $("ctrl-handoff-context");
   const hpath = $("ctrl-handoff-path");
   if (acct && cfg.keepwarm) acct.value = cfg.keepwarm.accountType || "auto";
   if (arm5) arm5.checked = !!(tiers["5m"] && tiers["5m"].arm);
   if (arm1) arm1.checked = !!(tiers["1h"] && tiers["1h"].arm);
   if (cap1 && tiers["1h"]) cap1.value = String(tiers["1h"].maxPingsPerIdle ?? "");
   if (esc1) esc1.checked = !!(tiers["1h"] && tiers["1h"].escalateToHandoff);
-  // An empty box is the off state, matching `handoffAtContextTokens: null`.
-  if (hctx && cfg.guardian) {
-    const v = cfg.guardian.handoffAtContextTokens;
-    hctx.value = v == null ? "" : String(v);
-  }
   // Relative to each session's own cwd; the daemon resolves it before naming it to Claude.
   if (hpath && cfg.guardian) hpath.value = cfg.guardian.handoffPath || "";
   syncDependentControls(cfg);
@@ -156,7 +148,6 @@ export function wireControls() {
   const arm1 = $("ctrl-arm-1h");
   const cap1 = $("ctrl-cap-1h");
   const esc1 = $("ctrl-escalate-1h");
-  const hctx = $("ctrl-handoff-context");
   const hpath = $("ctrl-handoff-path");
   // Grey the dependent rows immediately rather than after the round-trip; postConfig
   // re-syncs from the daemon's echo either way, so a rejected change still snaps back.
@@ -178,8 +169,6 @@ export function wireControls() {
   if (arm1) arm1.onchange = () => postConfig({ keepwarm: { tiers: { "1h": { arm: arm1.checked } } } });
   if (cap1) cap1.onchange = () => postConfig({ keepwarm: { tiers: { "1h": { maxPingsPerIdle: Number(cap1.value) } } } });
   if (esc1) esc1.onchange = () => postConfig({ keepwarm: { tiers: { "1h": { escalateToHandoff: esc1.checked } } } });
-  // Blank means off; the daemon takes null for that and ignores non-positive numbers.
-  if (hctx) hctx.onchange = () => postConfig({ guardian: { handoffAtContextTokens: hctx.value === "" ? null : Number(hctx.value) } });
   // Blank is not an off state here — the daemon substitutes the default, since an
   // instruction that names no file at all is worse than one naming the wrong file.
   if (hpath) hpath.onchange = () => postConfig({ guardian: { handoffPath: hpath.value } });

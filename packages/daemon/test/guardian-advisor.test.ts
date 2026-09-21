@@ -338,31 +338,9 @@ describe("guardian: non-usage-window handoff triggers", () => {
     expect(g.armHandoff(SID, "first", "x")).toBe(true);
     expect(g.armHandoff(SID, "second", "y")).toBe(false);
   });
-
-  it("onAssistantTurn arms a handoff once context passes the threshold", () => {
-    makeGuardian({ handoffAtContextTokens: 500 }).onAssistantTurn(SID);
-    expect(tracker.get(SID)!.guardian.pendingAction).toBe("handoff");
-  });
-
-  it("onAssistantTurn is inert below the threshold, and when the trigger is null", () => {
-    makeGuardian({ handoffAtContextTokens: 10_000_000 }).onAssistantTurn(SID);
-    expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
-
-    makeGuardian({ handoffAtContextTokens: null }).onAssistantTurn(SID);
-    expect(tracker.get(SID)!.guardian.pendingAction).toBeNull();
-  });
 });
 
 describe("guardian: the delivered instruction states the real reason", () => {
-  it("a context-triggered handoff does not claim a usage limit", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
-    const reason = tracker.get(SID)!.guardian.pendingReason!;
-    expect(reason).toMatch(/context has grown/);
-    expect(reason).not.toMatch(/usage limit/i);
-    expect(reason).not.toMatch(/subscription/i);
-  });
-
   it("a usage-window handoff still says so, with the window and percentage", () => {
     const g = makeGuardian();
     writeCourier(95);
@@ -380,8 +358,8 @@ describe("guardian: the delivered instruction states the real reason", () => {
   });
 
   it("ack clears the reason along with the action", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     expect(g.ack(SID, "handoff")).toBe(true);
     const gs = tracker.get(SID)!.guardian;
     expect(gs.pendingAction).toBeNull();
@@ -392,25 +370,25 @@ describe("guardian: the delivered instruction states the real reason", () => {
 describe("guardian: the handoff path is pinned, not left to the model", () => {
   it("resolves the configured path against the session's own cwd", () => {
     tracker.get(SID)!.cwd = "/repo/root";
-    const g = makeGuardian({ handoffAtContextTokens: 500, handoffPath: "HANDOFF.md" });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian({ handoffPath: "HANDOFF.md" });
+    g.armHandoff(SID, "test-reason", "detail");
     expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(path.resolve("/repo/root", "HANDOFF.md"));
   });
 
   it("honors a subdirectory path and an absolute path", () => {
     tracker.get(SID)!.cwd = "/repo/root";
-    makeGuardian({ handoffAtContextTokens: 500, handoffPath: "docs/HANDOFF.md" }).onAssistantTurn(SID);
+    makeGuardian({ handoffPath: "docs/HANDOFF.md" }).armHandoff(SID, "path-a", "detail");
     expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(path.resolve("/repo/root", "docs/HANDOFF.md"));
 
     tracker.get(SID)!.guardian.pendingAction = null;
     const abs = path.resolve("/elsewhere/NOTES.md");
-    makeGuardian({ handoffAtContextTokens: 501, handoffPath: abs }).onAssistantTurn(SID);
+    makeGuardian({ handoffPath: abs }).armHandoff(SID, "path-b", "detail");
     expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe(abs);
   });
 
   it("falls back to the bare configured path when the session has no cwd yet", () => {
     expect(tracker.get(SID)!.cwd).toBeUndefined();
-    makeGuardian({ handoffAtContextTokens: 500, handoffPath: "HANDOFF.md" }).onAssistantTurn(SID);
+    makeGuardian({ handoffPath: "HANDOFF.md" }).armHandoff(SID, "test-reason", "detail");
     expect(tracker.get(SID)!.guardian.pendingHandoffPath).toBe("HANDOFF.md");
   });
 
@@ -426,8 +404,8 @@ describe("guardian: the handoff path is pinned, not left to the model", () => {
 
   it("the advisor names the resolved path in both the instruction and the user message", () => {
     tracker.get(SID)!.cwd = "/repo/root";
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     const resolved = path.resolve("/repo/root", "HANDOFF.md");
     const res = makeAdvisor((sid, action) => g.ack(sid, action)).advise({ session_id: SID, prompt: "next" });
     expect(res.additionalContext).toContain(`Update ${resolved}`);
@@ -440,8 +418,8 @@ describe("guardian: the handoff path is pinned, not left to the model", () => {
 describe("guardian: the human gets a resume prompt, once, after delivery", () => {
   it("ack on a handoff leaves a paste-ready prompt naming the resolved path", () => {
     tracker.get(SID)!.cwd = "/repo/root";
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
     expect(g.ack(SID, "handoff")).toBe(true);
     const prompt = tracker.get(SID)!.guardian.resumePrompt!;
@@ -452,8 +430,8 @@ describe("guardian: the human gets a resume prompt, once, after delivery", () =>
   });
 
   it("shows exactly once", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     g.ack(SID, "handoff");
     expect(g.resumeShown(SID)).toBe(true);
     expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
@@ -461,15 +439,15 @@ describe("guardian: the human gets a resume prompt, once, after delivery", () =>
   });
 
   it("arms no resume prompt for a wrapup, which writes no single file to point at", () => {
-    const g = makeGuardian({ action: "wrapup", handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian({ action: "wrapup" });
+    g.armHandoff(SID, "test-reason", "detail");
     expect(g.ack(SID, "wrapup")).toBe(true);
     expect(tracker.get(SID)!.guardian.resumePrompt).toBeNull();
   });
 
   it("arms the prompt whichever surface delivered — the advisor path included", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     makeAdvisor((sid, action) => g.ack(sid, action)).advise({ session_id: SID, prompt: "next" });
     expect(tracker.get(SID)!.guardian.resumePrompt).toMatch(/HANDOFF\.md/);
   });
@@ -481,12 +459,12 @@ describe("guardian: an armed instruction survives a daemon restart", () => {
 
   it("re-attaches an undelivered instruction instead of losing it to the one-shot key", () => {
     tracker.get(SID)!.cwd = "/repo/root";
-    makeGuardian({ handoffAtContextTokens: 500 }).onAssistantTurn(SID);
+    makeGuardian().armHandoff(SID, "test-reason", "detail");
     const armed = { ...tracker.get(SID)!.guardian };
     expect(armed.pendingAction).toBe("handoff");
 
     // The process dies here: in-memory state is gone, the one-shot key in `meta` is not.
-    const g2 = afterRestart({ handoffAtContextTokens: 500 });
+    const g2 = afterRestart();
     tracker.get(SID)!.guardian.pendingAction = null;
     tracker.get(SID)!.guardian.pendingReason = null;
     tracker.get(SID)!.guardian.pendingHandoffPath = null;
@@ -503,8 +481,8 @@ describe("guardian: an armed instruction survives a daemon restart", () => {
   });
 
   it("re-attaches an unshown resume prompt too", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     g.ack(SID, "handoff");
     const prompt = tracker.get(SID)!.guardian.resumePrompt;
     expect(prompt).toBeTruthy();
@@ -515,8 +493,8 @@ describe("guardian: an armed instruction survives a daemon restart", () => {
   });
 
   it("leaves nothing behind once delivered and shown", () => {
-    const g = makeGuardian({ handoffAtContextTokens: 500 });
-    g.onAssistantTurn(SID);
+    const g = makeGuardian();
+    g.armHandoff(SID, "test-reason", "detail");
     g.ack(SID, "handoff");
     g.resumeShown(SID);
     expect(afterRestart().restorePending()).toEqual([]);

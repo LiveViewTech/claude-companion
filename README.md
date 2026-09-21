@@ -170,20 +170,15 @@ which is the only way to catch a profile that didn't take.
 - **Advisor** — UserPromptSubmit hook (<100ms budget, fail-open): plan-first nudges on
   design-shaped prompts; model-switch cache-invalidation cost shown ambiently (model-scoped caches!).
 - **Guardian: find a stopping place before it gets expensive** — one one-shot channel, armed by
-  three unrelated triggers, that tells Claude — once per session — to write a handoff and wrap up:
+  two unrelated triggers, that tells Claude — once per session — to write a handoff and wrap up:
   1. **A usage window near its cap.** The statusline couriers Claude Code's official `rate_limits`
      field (the CLI's own name for the 5-hour / 7-day plan windows) to the daemon; toast at 80%,
      instruction at 90% (`guardian.notifyPct` / `actPct`).
-  2. **Context past `guardian.handoffAtContextTokens`** (default 150K). The only trigger that works
-     on a fixed-token-rate seat, which has no usage windows to read at all: past ~150K, carrying the
-     context costs more per turn than a fresh session plus one handoff read. It's a threshold test
-     evaluated every turn, not a crossing detector, so switching it on mid-session arms on the next
-     turn rather than missing a crossing that already happened.
-  3. **Keep-warm reaching its ping cap** on an escalating tier — the point where buying time stops
+  2. **Keep-warm reaching its ping cap** on an escalating tier — the point where buying time stops
      being the cheap move and externalizing the state starts.
 
   Each trigger supplies its own reason, and both delivery surfaces splice that reason into the
-  instruction, so a context-triggered handoff never claims your subscription is nearly exhausted on
+  instruction, so a keep-warm-triggered handoff never claims your subscription is nearly exhausted on
   a seat that has no usage windows. The handoff path is **resolved per session against that session's
   own cwd** (`guardian.handoffPath`, default `HANDOFF.md`) and the exact path is named in the
   instruction and echoed in the toast — naming the file in prose left the model to resolve it against
@@ -255,7 +250,6 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
     "action": "handoff",
     "notifyPct": 80,
     "actPct": 90,
-    "handoffAtContextTokens": 150000,
     "handoffPath": "HANDOFF.md"
   },
   "keepwarm": {
@@ -282,7 +276,7 @@ Turning the optional features on/off:
 - **Keep-warm** — `keepwarm.enabled` (master switch; even when `true` it's opt-in per
   session via the dashboard **arm** button). Set `false` to hard-disable — note that this
   short-circuits the *entire* gate, so the per-tier flags, the ping cap and the cap's handoff
-  escalation all go dead with it; the context-size handoff is the one trigger that survives.
+  escalation all go dead with it; only the usage-window trigger keeps working.
   Per-tier policy lives in `keepwarm.tiers["5m"|"1h"]`: `arm` (allow keep-warm on sessions
   measured at that tier), `maxPingsPerIdle` (soft cap) and `escalateToHandoff` (at the cap, arm a
   handoff rather than go quiet). `keepwarm.accountType` (`auto|pro|enterprise`) only seeds the
@@ -293,12 +287,9 @@ Turning the optional features on/off:
   often it can fire per session. This is separate from the guardian's wrap-up delivery.
 - **Session naming** — `naming.enabled`; `naming.model` is passed to `claude -p --model`.
 - **Guardian** — `guardian.action`: `off | notify-only | wrapup | handoff`. This is also the master
-  switch for the context-size and ping-cap triggers: on `off` or `notify-only` they never inject an
-  instruction. `guardian.handoffAtContextTokens` sets the context threshold (`null` switches that
-  trigger off, leaving the guardian purely usage-window driven — the right setting only if you
-  actually have usage windows). `guardian.handoffPath` (default `HANDOFF.md`) is resolved against
-  each session's own cwd; blank resets it to the default rather than leaving the instruction naming
-  no file at all.
+  switch for the ping-cap trigger: on `off` or `notify-only` it never injects an instruction.
+  `guardian.handoffPath` (default `HANDOFF.md`) is resolved against each session's own cwd; blank
+  resets it to the default rather than leaving the instruction naming no file at all.
 - **Turn signal** — `turnSignal.sound` (audible alert) and `turnSignal.flash` (dashboard flash)
   toggle independently; `turnSignal.enabled` and the rest of the block are config-only.
 - **Card view** — `dashboard.cardView`: `advanced` (default) is the full session card; `simple` keeps

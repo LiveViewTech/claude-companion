@@ -91,17 +91,6 @@ export interface CccConfig {
     notifyPct: number;
     actPct: number;
     /**
-     * Arm a handoff once a session's cacheable prefix passes this many tokens, independent
-     * of any usage window. This is the "find a good stopping place" trigger: past ~150K the
-     * per-turn cost of carrying the context exceeds what a fresh session plus a HANDOFF.md
-     * read would cost, so the cheapest move is to write the handoff and clear.
-     *
-     * Requires `action` to be "wrapup" or "handoff" (it reuses that one-shot delivery path).
-     * null disables the trigger, leaving guardian purely usage-window driven — which is the
-     * right setting on a fixed-token-rate seat with no usage windows to read.
-     */
-    handoffAtContextTokens: number | null;
-    /**
      * Where the handoff lives, relative to the session's cwd (or absolute). Both delivery
      * surfaces name this file, and the daemon resolves it against the session cwd before
      * handing it over, so the model is told an exact path instead of resolving "HANDOFF.md"
@@ -225,7 +214,7 @@ export const DEFAULTS: CccConfig = {
   pricing: { autoResolve: true, refreshDays: 7 },
   accountUsage: { enabled: true, pollSeconds: 300 },
   audit: { enabled: true, quietMinutes: 15, alertOnDrift: true },
-  guardian: { action: "notify-only", notifyPct: 80, actPct: 90, handoffAtContextTokens: 150_000, handoffPath: "HANDOFF.md" },
+  guardian: { action: "notify-only", notifyPct: 80, actPct: 90, handoffPath: "HANDOFF.md" },
   keepwarm: {
     enabled: true,
     accountType: "auto",
@@ -300,13 +289,19 @@ function migrateKeepwarm(raw: LegacyKeepwarm | undefined): CccConfig["keepwarm"]
 export function loadConfig(): CccConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(configFile(), "utf8")) as Partial<CccConfig>;
+    const guardian: CccConfig["guardian"] & { handoffAtContextTokens?: unknown } = {
+      ...DEFAULTS.guardian,
+      ...(raw.guardian ?? {}),
+    };
+    // Retired context-size trigger. Drop the stale key so saveConfig writes a clean file.
+    delete guardian.handoffAtContextTokens;
     return {
       ...DEFAULTS,
       ...raw,
       pricing: { ...DEFAULTS.pricing, ...(raw.pricing ?? {}) },
       accountUsage: { ...DEFAULTS.accountUsage, ...(raw.accountUsage ?? {}) },
       audit: { ...DEFAULTS.audit, ...(raw.audit ?? {}) },
-      guardian: { ...DEFAULTS.guardian, ...(raw.guardian ?? {}) },
+      guardian,
       keepwarm: migrateKeepwarm(raw.keepwarm as LegacyKeepwarm | undefined),
       advisor: { ...DEFAULTS.advisor, ...(raw.advisor ?? {}) },
       naming: { ...DEFAULTS.naming, ...(raw.naming ?? {}) },

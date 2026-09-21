@@ -163,8 +163,8 @@ export interface SessionState {
     pendingAction: "wrapup" | "handoff" | null;
     /**
      * Why `pendingAction` was armed, as a clause the delivery surfaces splice into the
-     * instruction ("this session's context has grown to 372K tokens"). Required, because the
-     * same action arms for unrelated reasons — a usage window, context size, or keep-warm
+     * instruction ("the user's subscription usage limit is nearly exhausted"). Required,
+     * because the same action arms for unrelated reasons — a usage window or keep-warm
      * giving up — and an instruction that states the wrong cause is worse than a vague one:
      * it tells Claude something false about the user's account.
      */

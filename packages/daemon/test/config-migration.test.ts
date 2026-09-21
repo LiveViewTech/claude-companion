@@ -72,22 +72,24 @@ describe("keepwarm config migration (pre-tier -> per-tier)", () => {
     expect(cfg.keepwarm.tiers["1h"].escalateToHandoff).toBe(true);
   });
 
-  it("defaults accountType to auto and keeps the context trigger", async () => {
+  it("defaults accountType to auto", async () => {
     const cfg = await loadFrom({ keepwarm: { enabled: true } });
     expect(cfg.keepwarm.accountType).toBe("auto");
-    expect(cfg.guardian.handoffAtContextTokens).toBe(150_000);
   });
 
-  it("honors an explicit accountType and a disabled context trigger", async () => {
-    const cfg = await loadFrom({ keepwarm: { accountType: "pro" }, guardian: { handoffAtContextTokens: null } });
+  it("honors an explicit accountType", async () => {
+    const cfg = await loadFrom({ keepwarm: { accountType: "pro" } });
     expect(cfg.keepwarm.accountType).toBe("pro");
-    expect(cfg.guardian.handoffAtContextTokens).toBeNull();
   });
 
   it("defaults handoffPath, and keeps a configured one through a partial guardian block", async () => {
     expect((await loadFrom({ guardian: { action: "handoff" } })).guardian.handoffPath).toBe("HANDOFF.md");
     const cfg = await loadFrom({ guardian: { handoffPath: "docs/STATE.md" } });
     expect(cfg.guardian.handoffPath).toBe("docs/STATE.md");
-    expect(cfg.guardian.handoffAtContextTokens).toBe(150_000); // untouched sibling
+  });
+
+  it("drops a stale handoffAtContextTokens key from a pre-removal config", async () => {
+    const cfg = await loadFrom({ guardian: { handoffAtContextTokens: 150_000 } });
+    expect(cfg.guardian).not.toHaveProperty("handoffAtContextTokens");
   });
 });
