@@ -1,4 +1,4 @@
-# claude-companion (`ccc`)
+# claude-companion
 
 Token/cache cockpit for Claude Code: cost visibility, a live prompt-cache-TTL countdown,
 self-measuring cache keep-warm, a prompt advisor, and a guardian that tells Claude to write a
