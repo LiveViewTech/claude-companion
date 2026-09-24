@@ -17,7 +17,7 @@ import {
 } from "@ccc/core";
 import type { Store } from "./store.ts";
 
-const CANDIDATE_MODELS = ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
+const CANDIDATE_MODELS = ["claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
 
 export interface TrackerEvents {
   /** Session state changed (new turn ingested, expiry, etc.). */

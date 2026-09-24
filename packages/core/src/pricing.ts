@@ -4,6 +4,7 @@ import type { PriceSpec, RateMods, TtlTier, Usage } from "./types.ts";
  * Date-aware pricing table, USD per million tokens.
  * Derived rates (fixed multipliers of input price, per Anthropic docs):
  *   cache read = 0.1x · 5m cache write = 1.25x · 1h cache write = 2.0x
+ * except where an entry sets cacheReadMult (Opus 5.5 reads at 0.05x, Fable/Mythos 5.1 at 0.025x).
  * Sources: Anthropic pricing docs, re-verified 2026-08-26 (multipliers and every current
  * model rate confirmed; the 1M context window bills at standard rates on Claude 4.6+, so
  * there is no long-context tier to model).
@@ -12,11 +13,22 @@ import type { PriceSpec, RateMods, TtlTier, Usage } from "./types.ts";
  * $5 base, $6.25 5m write, $10 1h write, $0.50 read), so deriving them is correct.
  */
 const TABLE: Record<string, PriceSpec[]> = {
+  // Fable 5.1 and Mythos 5.1 keep 5's base rates but read cache at 0.025x ($0.25). Without
+  // entries they prefix-matched claude-fable-5 / claude-mythos-5 and read at 4x that.
+  // Verified 2026-09-24 against the pricing page.
+  "claude-fable-5-1": [{ inputPerM: 10, outputPerM: 50, cacheReadMult: 0.025 }],
+  "claude-mythos-5-1": [{ inputPerM: 10, outputPerM: 50, cacheReadMult: 0.025 }],
   "claude-fable-5": [{ inputPerM: 10, outputPerM: 50 }],
   "claude-mythos-5": [{ inputPerM: 10, outputPerM: 50 }],
-  // Fast mode is a research preview limited to these two models. 4.7 rejects speed:"fast"
+  // Fast mode is a research preview limited to these three models. 4.7 rejects speed:"fast"
   // outright and 4.6 accepts it, runs standard and bills standard, so neither gets a
   // fast entry. Verified 2026-09-09 against the pricing page's fast-mode table.
+  //
+  // Opus 5.5 is the first Opus below $5/$25, and its cache reads are 0.05x base ($0.20),
+  // not 0.1x. Writes keep the standard 1.25x/2x ($5 5m, $8 1h). Without its own entry it
+  // prefix-matched claude-opus-5 and every turn was costed 25% high, cache reads 150% high.
+  // Verified 2026-09-24 against platform.claude.com/docs/en/about-claude/pricing.
+  "claude-opus-5-5": [{ inputPerM: 4, outputPerM: 20, cacheReadMult: 0.05, fast: { inputPerM: 8, outputPerM: 40 } }],
   "claude-opus-5": [{ inputPerM: 5, outputPerM: 25, fast: { inputPerM: 10, outputPerM: 50 } }],
   "claude-opus-4-8": [{ inputPerM: 5, outputPerM: 25, fast: { inputPerM: 10, outputPerM: 50 } }],
   "claude-opus-4-7": [{ inputPerM: 5, outputPerM: 25 }],
@@ -35,6 +47,7 @@ const TABLE: Record<string, PriceSpec[]> = {
   "claude-haiku-4-5": [{ inputPerM: 1, outputPerM: 5 }],
 };
 
+/** Standard cache-read multiplier. A PriceSpec's cacheReadMult overrides it per model. */
 export const CACHE_READ_MULT = 0.1;
 export const CACHE_WRITE_5M_MULT = 1.25;
 export const CACHE_WRITE_1H_MULT = 2.0;
@@ -186,6 +199,17 @@ function longestPrefixKey(keys: string[], norm: string): string | undefined {
   return keys.filter((k) => norm.startsWith(k)).sort((a, b) => b.length - a.length)[0];
 }
 
+/**
+ * Cache-read multiplier the built-in table records for this exact id, else the standard
+ * 0.1x. Exact match only: the pricing-page parser checks published read columns against
+ * this, and a prefix match would let claude-opus-5-5's 0.05x vouch for some future
+ * claude-opus-5-5-x whose rate nobody has checked.
+ */
+export function builtInCacheReadMult(modelId: string, atIso?: string): number {
+  const specs = TABLE[normalizeModelId(modelId)];
+  return (specs && pickByDate(specs, atIso)?.cacheReadMult) ?? CACHE_READ_MULT;
+}
+
 function pickByDate(specs: PriceSpec[], atIso?: string): PriceSpec | null {
   const at = atIso ? atIso.slice(0, 10) : new Date().toISOString().slice(0, 10);
   for (const s of specs) {
@@ -201,6 +225,8 @@ export interface EffectiveRates {
   /** USD per million input tokens; cache columns derive from this. */
   inputPerM: number;
   outputPerM: number;
+  /** Cache-read multiplier of inputPerM for this model. */
+  cacheReadMult: number;
   /**
    * The request ran fast but the model has no known fast rates, so it was billed at
    * standard. Under-stating is the safe direction, but it is still a hole in the table
@@ -234,6 +260,7 @@ export function effectiveRates(modelId: string, mods?: RateMods, atIso?: string)
   return {
     inputPerM: (fast?.inputPerM ?? price.inputPerM) * geoMult,
     outputPerM: (fast?.outputPerM ?? price.outputPerM) * geoMult,
+    cacheReadMult: price.cacheReadMult ?? CACHE_READ_MULT,
     unpricedFast: wantsFast && fast === undefined,
     unknownGeo: geo !== undefined && geo !== GEO_US && geo !== "global",
   };
@@ -284,7 +311,7 @@ export function turnCost(usage: Usage, modelId: string, atIso?: string): TurnCos
   }
   const inputUsd = usage.input_tokens * perTok;
   const outputUsd = usage.output_tokens * outPerTok;
-  const cacheReadUsd = usage.cache_read_input_tokens * perTok * CACHE_READ_MULT;
+  const cacheReadUsd = usage.cache_read_input_tokens * perTok * rates.cacheReadMult;
   return {
     totalUsd: inputUsd + outputUsd + cacheReadUsd + cacheWriteUsd,
     inputUsd,

@@ -122,7 +122,7 @@ export async function doctor(): Promise<number> {
   if (priceCache.multiplierMismatch.length > 0) {
     console.log(
       `⚠ published cache columns disagree with ccc's multipliers for ${priceCache.multiplierMismatch.join(", ")} — ` +
-        "the 1.25x/2x/0.1x constants may be stale",
+        "the 1.25x/2x/0.1x constants (or that model's cacheReadMult) may be stale",
     );
     ok = false;
   }

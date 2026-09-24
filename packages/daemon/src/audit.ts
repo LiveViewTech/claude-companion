@@ -171,11 +171,7 @@ export class Auditor {
       turns: stats.turns,
       sessions: stats.sessions,
       models: stats.models,
-      soleModel: dominant(stats.models, (m) => m.costUsd, stats.costUsd),
-      soleSession:
-        stats.topSession && stats.costUsd > 0 && stats.topSession.costUsd / stats.costUsd >= SOLE_SHARE
-          ? stats.topSession.sessionId
-          : null,
+      ...soleOf(stats),
       inputTok: stats.inputTok,
       outputTok: stats.outputTok,
       cacheReadTok: stats.cacheReadTok,
@@ -276,11 +272,7 @@ export class Auditor {
           turns: stats.turns,
           sessions: stats.sessions,
           models: stats.models,
-          soleModel: dominant(stats.models, (m) => m.costUsd, stats.costUsd),
-          soleSession:
-            stats.topSession && stats.costUsd > 0 && stats.topSession.costUsd / stats.costUsd >= SOLE_SHARE
-              ? stats.topSession.sessionId
-              : null,
+          ...soleOf(stats),
           inputTok: stats.inputTok,
           outputTok: stats.outputTok,
           cacheReadTok: stats.cacheReadTok,
@@ -295,6 +287,35 @@ export class Auditor {
       `audit: backfilled ${result.windows} window(s) from ${result.instants} quiet instant(s), ${result.skippedInGaps} dropped inside poll gaps`,
     );
     return result;
+  }
+
+  /**
+   * Refresh the local side of every closed window from the turns table, after
+   * `ccc audit --reprice` re-costed stored turns. Boundaries and meter deltas stay exactly as
+   * observed: a reprice changes what ccc thinks the turns cost, not what the meter did. A
+   * backfill would re-derive the boundaries too, and can find windows the live audit never
+   * closed, so it is the wrong tool for this.
+   */
+  recostWindows(): number {
+    return this.store.transaction(() => {
+      const windows = this.store.auditWindows(0, Number.MAX_SAFE_INTEGER);
+      for (const w of windows) {
+        const stats = this.store.turnStatsInRange(w.startTs, w.endTs);
+        this.store.updateAuditWindowLocal(w.id, {
+          localCostUsd: round(stats.costUsd, 6),
+          turns: stats.turns,
+          sessions: stats.sessions,
+          models: stats.models,
+          ...soleOf(stats),
+          inputTok: stats.inputTok,
+          outputTok: stats.outputTok,
+          cacheReadTok: stats.cacheReadTok,
+          cacheW5Tok: stats.cacheW5Tok,
+          cacheW1hTok: stats.cacheW1hTok,
+        });
+      }
+      return windows.length;
+    });
   }
 
   /** Freeze the current per-model ratios as the baselines drift is measured against. */
@@ -409,6 +430,21 @@ function bump(
 }
 
 /** The key carrying at least SOLE_SHARE of `total`, else null. */
+/** The model and session, if any, that dominated a window's local cost. */
+function soleOf(stats: {
+  costUsd: number;
+  models: Record<string, { costUsd: number }>;
+  topSession: { sessionId: string; costUsd: number } | null;
+}): { soleModel: string | null; soleSession: string | null } {
+  return {
+    soleModel: dominant(stats.models, (m) => m.costUsd, stats.costUsd),
+    soleSession:
+      stats.topSession && stats.costUsd > 0 && stats.topSession.costUsd / stats.costUsd >= SOLE_SHARE
+        ? stats.topSession.sessionId
+        : null,
+  };
+}
+
 function dominant<T>(rec: Record<string, T>, value: (t: T) => number, total: number): string | null {
   if (total <= 0) return null;
   for (const [k, v] of Object.entries(rec)) {

@@ -414,7 +414,7 @@ export class PriceResolver {
     if (parse.multiplierMismatch.length) {
       this.log(
         `price-resolver: cache-column mismatch for ${parse.multiplierMismatch.join(", ")} — ` +
-          `ccc's cache multipliers (1.25x/2x/0.1x) may be stale`,
+          `ccc's cache multipliers (1.25x/2x/0.1x, or a model's cacheReadMult) may be stale`,
       );
     }
   }

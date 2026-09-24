@@ -206,6 +206,12 @@ export interface PriceSpec {
    * apply on top of fast rates, so deriving them keeps one source of truth.
    */
   fast?: FastRates;
+  /**
+   * Cache-read multiplier of base input, for the models that don't use the standard 0.1x
+   * (Opus 5.5 reads at 0.05x, Fable 5.1 and Mythos 5.1 at 0.025x). Absent means 0.1x. Stacks on fast and geo rates like the
+   * standard one does.
+   */
+  cacheReadMult?: number;
 }
 
 /** Premium input/output rates for fast mode, USD per million tokens. */

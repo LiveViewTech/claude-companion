@@ -1,16 +1,17 @@
 import path from "node:path";
-import { appPaths } from "@ccc/core";
+import { appPaths, turnCost, type Usage } from "@ccc/core";
 import { loadConfig } from "@ccc/daemon/config";
 import { Auditor, type AuditReport } from "@ccc/daemon/audit";
-import { Store } from "@ccc/daemon/store";
+import { applyCachedPrices } from "@ccc/daemon/price-resolver";
+import { Store, type StoredTurn } from "@ccc/daemon/store";
 
 /**
  * `ccc audit` — how well ccc's own pricing math matches Anthropic's meter.
  *
  * Reads the database directly rather than the daemon's HTTP API, so a report is available
- * even when the daemon is down (WAL mode makes a concurrent reader safe). `--backfill` is
- * the one subcommand that writes, and it takes the write lock for the whole rebuild so it
- * can't interleave with a running daemon. The daemon is what BUILDS the windows, though:
+ * even when the daemon is down (WAL mode makes a concurrent reader safe). `--backfill` and
+ * `--reprice` are the subcommands that write, and each takes the write lock for the whole
+ * rewrite so it can't interleave with a running daemon. The daemon is what BUILDS the windows, though:
  * with it stopped, no new ones accumulate.
  */
 export async function audit(args: string[]): Promise<number> {
@@ -32,6 +33,8 @@ export async function audit(args: string[]): Promise<number> {
       printReport(auditor.report(since), days, cfg.audit.enabled);
       return 0;
     }
+
+    if (args.includes("--reprice")) return reprice(store, auditor, args.includes("--dry-run"));
 
     if (args.includes("--accept")) {
       const accepted = auditor.acceptBaselines(since);
@@ -55,6 +58,52 @@ export async function audit(args: string[]): Promise<number> {
   } finally {
     store.close();
   }
+}
+
+/**
+ * Re-cost every stored turn at current rates. Run after a pricing.ts change: cost_usd is
+ * fixed at ingest, so session totals, the local daily figure and audit windows otherwise
+ * keep the old rate indefinitely.
+ */
+function reprice(store: Store, auditor: Auditor, dryRun: boolean): number {
+  // Price as the daemon does, resolved rates included, or a model priced only by the
+  // resolver would read as unpriceable here and keep a stale cost.
+  applyCachedPrices();
+  const r = store.repriceTurns(costOfStoredTurn, { dryRun });
+  const usd = (n: number) => `$${n.toFixed(2)}`;
+  console.log(`${dryRun ? "would re-cost" : "re-costed"} ${r.changed} of ${r.turns} stored turn(s)`);
+  console.log("");
+  console.log("model                        turns  changed      before       after");
+  for (const [model, m] of Object.entries(r.byModel).sort((a, b) => b[1].afterUsd - a[1].afterUsd)) {
+    console.log(
+      `${model.padEnd(26)} ${String(m.turns).padStart(7)}  ${String(m.changed).padStart(7)}  ` +
+        `${usd(m.beforeUsd).padStart(10)}  ${usd(m.afterUsd).padStart(10)}`,
+    );
+  }
+  if (r.unpriced) console.log(`\n${r.unpriced} turn(s) could not be priced and kept their stored cost.`);
+  if (dryRun || r.changed === 0) return 0;
+  console.log(`\nrefreshed the local side of ${auditor.recostWindows()} audit window(s).`);
+  console.log("Restart the daemon (ccc daemon restart) so live session totals pick up the new costs.");
+  return 0;
+}
+
+/** Rebuild a turn's usage block from its stored columns and price it; null when it can't be. */
+export function costOfStoredTurn(t: StoredTurn): number | null {
+  if (!t.model) return null;
+  // Ingest stores only the per-TTL write columns. A transcript without that breakdown left
+  // both at 0 while prefix_tok kept the write total, and re-costing would drop the writes.
+  if (t.prefixTok > t.inputTok + t.cacheReadTok + t.cacheW5Tok + t.cacheW1hTok) return null;
+  const usage: Usage = {
+    input_tokens: t.inputTok,
+    output_tokens: t.outputTok,
+    cache_read_input_tokens: t.cacheReadTok,
+    cache_creation_input_tokens: t.cacheW5Tok + t.cacheW1hTok,
+    cache_creation: { ephemeral_5m_input_tokens: t.cacheW5Tok, ephemeral_1h_input_tokens: t.cacheW1hTok },
+    ...(t.speed ? { speed: t.speed } : {}),
+    ...(t.geo ? { inference_geo: t.geo } : {}),
+  };
+  const cost = turnCost(usage, t.model, new Date(t.ts).toISOString());
+  return cost.unknownModel ? null : cost.totalUsd;
 }
 
 function printReport(r: AuditReport, days: number, enabled: boolean): void {

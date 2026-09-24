@@ -1,6 +1,5 @@
 import type { RateMods, TtlTier, Usage } from "./types.ts";
 import {
-  CACHE_READ_MULT,
   CACHE_WRITE_1H_MULT,
   CACHE_WRITE_5M_MULT,
   effectiveRates,
@@ -33,20 +32,20 @@ export function rewriteCostUsd(prefix: number, tier: TtlTier, modelId: string, m
 /**
  * "Prefix tax": USD to carry the cached prefix for one more turn — the warm
  * cache read the next request pays just to re-read the existing context
- * (0.1x input rate). This is the ambient cost of NOT starting fresh; a new
+ * (0.1x input rate; 0.05x on Opus 5.5). This is the ambient cost of NOT starting fresh; a new
  * chat pays ~0 of it. Same math as a keep-warm ping minus the output tokens.
  */
 export function prefixTaxUsd(prefix: number, modelId: string, mods?: RateMods): number {
   const rates = effectiveRates(modelId, mods);
   if (!rates) return 0;
-  return (prefix / 1_000_000) * rates.inputPerM * CACHE_READ_MULT;
+  return (prefix / 1_000_000) * rates.inputPerM * rates.cacheReadMult;
 }
 
 /** USD for one cache-refreshing ping: prefix read + measured/estimated output. */
 export function pingCostUsd(prefix: number, modelId: string, outputTokens = 200, mods?: RateMods): number {
   const rates = effectiveRates(modelId, mods);
   if (!rates) return 0;
-  const read = (prefix / 1_000_000) * rates.inputPerM * CACHE_READ_MULT;
+  const read = (prefix / 1_000_000) * rates.inputPerM * rates.cacheReadMult;
   const out = (outputTokens / 1_000_000) * rates.outputPerM;
   return read + out;
 }

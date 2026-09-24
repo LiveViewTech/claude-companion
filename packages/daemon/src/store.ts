@@ -218,6 +218,64 @@ export class Store {
     return res.changes > 0;
   }
 
+  /**
+   * Re-cost stored turns from their token columns. cost_usd is fixed at ingest, so without
+   * this a pricing.ts change leaves history, session totals and audit windows at the old
+   * rate. `costOf` returns null for a turn it can't price, and that row keeps its cost
+   * rather than dropping to $0. Keep-warm pings mirror their turn's cost and follow it.
+   * With `dryRun`, nothing is written and the result says what would change.
+   */
+  repriceTurns(costOf: (t: StoredTurn) => number | null, opts: { dryRun?: boolean } = {}): RepriceResult {
+    const run = (): RepriceResult => {
+      const rows = this.db
+        .prepare(
+          `SELECT uuid, ts, model, input_tok, output_tok, cache_read_tok, cache_w5_tok, cache_w1h_tok,
+                  prefix_tok, speed, geo, cost_usd FROM turns`,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const update = this.db.prepare(`UPDATE turns SET cost_usd = ? WHERE uuid = ?`);
+      const result: RepriceResult = { turns: rows.length, changed: 0, unpriced: 0, byModel: {} };
+      for (const r of rows) {
+        const t: StoredTurn = {
+          uuid: String(r["uuid"]),
+          ts: Number(r["ts"]),
+          model: r["model"] == null ? null : String(r["model"]),
+          inputTok: Number(r["input_tok"]),
+          outputTok: Number(r["output_tok"]),
+          cacheReadTok: Number(r["cache_read_tok"]),
+          cacheW5Tok: Number(r["cache_w5_tok"]),
+          cacheW1hTok: Number(r["cache_w1h_tok"]),
+          prefixTok: Number(r["prefix_tok"]),
+          speed: r["speed"] == null ? null : String(r["speed"]),
+          geo: r["geo"] == null ? null : String(r["geo"]),
+          costUsd: Number(r["cost_usd"]),
+        };
+        const next = costOf(t);
+        const m = (result.byModel[t.model ?? "unknown"] ??= { turns: 0, changed: 0, beforeUsd: 0, afterUsd: 0 });
+        m.turns++;
+        m.beforeUsd += t.costUsd;
+        if (next == null) {
+          result.unpriced++;
+          m.afterUsd += t.costUsd;
+          continue;
+        }
+        m.afterUsd += next;
+        if (Math.abs(next - t.costUsd) < 1e-9) continue;
+        m.changed++;
+        result.changed++;
+        if (!opts.dryRun) update.run(next, t.uuid);
+      }
+      if (!opts.dryRun && result.changed > 0) {
+        this.db.exec(
+          `UPDATE pings SET cost_usd = (SELECT t.cost_usd FROM turns t WHERE t.session_id = pings.session_id AND t.ts = pings.ts LIMIT 1)
+           WHERE EXISTS (SELECT 1 FROM turns t WHERE t.session_id = pings.session_id AND t.ts = pings.ts)`,
+        );
+      }
+      return result;
+    };
+    return opts.dryRun ? run() : this.transaction(run);
+  }
+
   insertToolCall(c: {
     toolUseId: string;
     sessionId: string;
@@ -521,6 +579,45 @@ export class Store {
       );
   }
 
+  /** Rewrite a window's local side: everything except its boundaries and meter delta. */
+  updateAuditWindowLocal(
+    id: number,
+    w: {
+      localCostUsd: number;
+      turns: number;
+      sessions: number;
+      models: Record<string, { costUsd: number; turns: number }>;
+      soleModel: string | null;
+      soleSession: string | null;
+      inputTok: number;
+      outputTok: number;
+      cacheReadTok: number;
+      cacheW5Tok: number;
+      cacheW1hTok: number;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE audit_windows SET local_cost_usd = ?, turns = ?, sessions = ?, models = ?, sole_model = ?, sole_session = ?,
+           input_tok = ?, output_tok = ?, cache_read_tok = ?, cache_w5_tok = ?, cache_w1h_tok = ?
+         WHERE id = ?`,
+      )
+      .run(
+        w.localCostUsd,
+        w.turns,
+        w.sessions,
+        JSON.stringify(w.models),
+        w.soleModel,
+        w.soleSession,
+        w.inputTok,
+        w.outputTok,
+        w.cacheReadTok,
+        w.cacheW5Tok,
+        w.cacheW1hTok,
+        id,
+      );
+  }
+
   /** Closed audit windows ending in (sinceMs, untilMs], oldest first. */
   auditWindows(
     sinceMs: number,
@@ -615,4 +712,29 @@ export class Store {
   close(): void {
     this.db.close();
   }
+}
+
+/** A turns row as stored, for re-costing. */
+export interface StoredTurn {
+  uuid: string;
+  ts: number;
+  model: string | null;
+  inputTok: number;
+  outputTok: number;
+  cacheReadTok: number;
+  cacheW5Tok: number;
+  cacheW1hTok: number;
+  /** input + cache read + cache write at ingest, so a lost write total is detectable. */
+  prefixTok: number;
+  speed: string | null;
+  geo: string | null;
+  costUsd: number;
+}
+
+export interface RepriceResult {
+  turns: number;
+  changed: number;
+  /** Turns `costOf` couldn't price; their stored cost was kept. */
+  unpriced: number;
+  byModel: Record<string, { turns: number; changed: number; beforeUsd: number; afterUsd: number }>;
 }

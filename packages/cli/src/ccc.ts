@@ -48,10 +48,11 @@ commands:
   ccc install [--dry-run]        register statusline + hooks in ~/.claude/settings.json (with backup)
   ccc uninstall                  remove our statusline + hooks (with backup)
   ccc prices [--refresh]         show model rates (built-in vs auto-resolved); --refresh re-reads the published table
-  ccc audit [--days N] [--json] [--backfill] [--accept]
+  ccc audit [--days N] [--json] [--backfill] [--accept] [--reprice [--dry-run]]
                                  reconcile ccc's cost math against Anthropic's meter; --backfill rebuilds
                                  the period from stored meter samples; --accept freezes the current
-                                 per-model ratios as the baseline drift is measured against
+                                 per-model ratios as the baseline drift is measured against; --reprice
+                                 re-costs stored turns at current rates (run after a pricing change)
   ccc launch [--ttl 1h|5m] [-- args]
                                  start claude with a cache-TTL profile
   ccc code [dir] [--ttl 1h|5m]   start VS Code with a cache-TTL profile

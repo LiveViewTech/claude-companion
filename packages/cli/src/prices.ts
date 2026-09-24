@@ -47,7 +47,7 @@ export async function prices(args: string[]): Promise<number> {
     // "*" marks a minimum taken from the published page over the built-in family guess.
     const min = minCacheablePrefix(id);
     const minMark = min !== builtInCacheMinimum(id) ? "*" : " ";
-    // Fast mode exists on two models; "—" everywhere else is the answer to "why is my
+    // Fast mode exists on three models; "—" everywhere else is the answer to "why is my
     // fast session costed at standard rates".
     const fast = p.fast ? `${p.fast.inputPerM}/${p.fast.outputPerM}` : "—";
     console.log(
@@ -73,7 +73,9 @@ export async function prices(args: string[]): Promise<number> {
   if (cache.multiplierMismatch.length > 0) {
     console.log();
     console.log(`⚠ published cache columns disagree with ccc's multipliers for: ${cache.multiplierMismatch.join(", ")}`);
-    console.log("  ccc assumes 1.25x (5m write) / 2x (1h write) / 0.1x (read). Verify those still hold.");
+    console.log(
+      "  ccc assumes 1.25x (5m write) / 2x (1h write) / 0.1x (read, unless the model's pricing.ts entry sets cacheReadMult). Verify those still hold.",
+    );
   }
   return 0;
 }
