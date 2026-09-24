@@ -11,14 +11,24 @@
 <header class="topbar">
   <div class="brand">claude-companion</div>
   <div class="tiles">
-    <div class="tile">
+    <div class="tile cost-only">
       <div class="tile-label">Today <span class="soft" id="day-note"></span></div>
       <div class="tile-value" id="day-cost">–</div>
     </div>
-    <div class="tile">
+    <div class="tile cost-only">
       <div class="tile-label">This month <span class="soft" id="month-note"></span></div>
       <div class="tile-value" id="month-cost">–</div>
       <div class="budget-bar" id="budget-bar" hidden><div class="budget-fill" id="budget-fill"></div></div>
+    </div>
+    <div class="tile flat-only">
+      <div class="tile-label">5-hour limit <span class="soft" id="limit-5h-note"></span></div>
+      <div class="tile-value" id="limit-5h">–</div>
+      <div class="budget-bar"><div class="budget-fill" id="limit-5h-fill"></div></div>
+    </div>
+    <div class="tile flat-only">
+      <div class="tile-label">Weekly limit <span class="soft" id="limit-7d-note"></span></div>
+      <div class="tile-value" id="limit-7d">–</div>
+      <div class="budget-bar"><div class="budget-fill" id="limit-7d-fill"></div></div>
     </div>
     <div class="tile">
       <div class="tile-label">Active sessions</div>
@@ -47,7 +57,7 @@
           <option value="enterprise">Enterprise / API — 1 hr cache</option>
         </select>
       </label>
-      <label class="ctrl" title="Card density. Advanced is the full card. Simple keeps only session cost, cost/turn and cold re-write, stacked above the cache ring — everything else on the card is hidden.">
+      <label class="ctrl" title="Card density. Advanced is the full card. Simple keeps only session cost, cost/turn and cold re-write (context size on a flat-fee plan), stacked above the cache ring — everything else on the card is hidden.">
         <span>Card view</span>
         <select id="ctrl-cardview">
           <option value="advanced">advanced</option>
@@ -121,7 +131,7 @@
     </details>
   </section>
 
-  <section class="feed-wrap" id="audit-wrap" hidden>
+  <section class="feed-wrap cost-only" id="audit-wrap" hidden>
     <details class="collapsible">
       <summary>Cost audit <span id="audit-note" class="soft"></span></summary>
       <div id="audit-figs" class="audit-figs"></div>
@@ -178,11 +188,12 @@
         </div>
       </div>
       <dl class="stats">
-        <div><dt title="Total API list-price cost of this session so far — input + output + cache reads and writes. Same basis as Claude Code's own /cost.">Session cost</dt><dd class="cost">–</dd></div>
-        <div><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Cost / turn <span class="soft carry-model"></span> <span class="soft carry-hint"></span></dt><dd class="carry"><span class="carry-val">–</span><span class="prefix-sub" title="Context prefix — how big the conversation is now: tokens re-sent and re-read from cache every turn. Grows as the chat gets longer.">–</span></dd></div>
-        <div class="carry-models-row"><dt title="The same per-turn carry cost if this session were running on other models (caches are priced per model).">…by model</dt><dd class="carry-models">–</dd></div>
-        <div><dt title="What you'd pay to rebuild the whole cache from scratch if it expires before your next prompt — a full cache write at 1.25× (5-min) to 2× (1-hour) the input rate. Shown as a warning of what idling past the countdown costs.">Cold re-write</dt><dd class="rewrite">–</dd></div>
-        <div class="switch-row"><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
+        <div class="flat-only"><dt title="Tokens re-sent to the model every turn: the whole conversation so far. A longer context uses up the 5-hour and weekly windows faster, and a fresh chat starts near zero. Yellow from 200k, red from 300k.">Context</dt><dd class="ctx">–</dd></div>
+        <div class="cost-only"><dt title="Total API list-price cost of this session so far — input + output + cache reads and writes. Same basis as Claude Code's own /cost.">Session cost</dt><dd class="cost">–</dd></div>
+        <div class="cost-only"><dt title="What it costs to carry this context for one more turn — the warm cache read (0.1× the input rate) the next prompt pays just to re-read everything above. A brand-new chat pays almost none of this.">Cost / turn <span class="soft carry-model"></span> <span class="soft carry-hint"></span></dt><dd class="carry"><span class="carry-val">–</span><span class="prefix-sub" title="Context prefix — how big the conversation is now: tokens re-sent and re-read from cache every turn. Grows as the chat gets longer.">–</span></dd></div>
+        <div class="carry-models-row cost-only"><dt title="The same per-turn carry cost if this session were running on other models (caches are priced per model).">…by model</dt><dd class="carry-models">–</dd></div>
+        <div class="cost-only"><dt title="What you'd pay to rebuild the whole cache from scratch if it expires before your next prompt — a full cache write at 1.25× (5-min) to 2× (1-hour) the input rate. Shown as a warning of what idling past the countdown costs.">Cold re-write</dt><dd class="rewrite">–</dd></div>
+        <div class="switch-row cost-only"><dt title="One-time cost to move this session to another model. Caches are per-model, so switching re-writes the entire context at the new model's rate.">Switch model</dt><dd class="switch">–</dd></div>
         <div class="kw-row"><dt title="Send tiny pings to keep the cache alive so it doesn't go cold during idle gaps — only worthwhile on 5-minute-TTL sessions. 'net' shows pings' cost vs. the cold re-writes they avoided.">Keep-warm</dt><dd><button class="kw-btn" type="button">arm</button> <span class="kw-info"></span></dd></div>
       </dl>
     </div>

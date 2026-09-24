@@ -44,7 +44,7 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
 | `ccc launch --ttl 1h\|5m [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
 | `ccc code [dir] --ttl 1h\|5m` | Same, for VS Code (extension sessions inherit the env) |
 | `ccc daemon start\|restart\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
-| `ccc open` | Dashboard (countdown rings, month/today meter + costs, cache economics, tokens-by-tool) |
+| `ccc open` | Dashboard (countdown rings, month/today meter + costs or, on a flat-fee plan, 5-hour/weekly limits + context size, cache economics, tokens-by-tool) |
 | `ccc doctor` | Transcript schema-drift canary, TTL observation, daemon health |
 
 The table uses a bare `ccc`, which exists once you `npm link` from the repo root. Without that, prefix
@@ -145,6 +145,16 @@ which is the only way to catch a profile that didn't take.
   by broken polling (same note, flagged). If the meter's newest reading itself goes stale the tiles
   fall back to the local this-device estimate and say how old the meter is, rather than subtract a
   frozen number from itself and report $0.00.
+- **Flat-fee plans show no dollars** — on Pro, Max and Team you pay a flat monthly fee, so a
+  per-session dollar figure describes nothing you're billed. The daemon reads the plan from Claude
+  Code's login (`subscriptionType` in `~/.claude/.credentials.json`; only that field is read) and,
+  on a flat plan, every surface drops its dollars: the statusline loses the session cost and the
+  re-write price on an expired cache, the dashboard header swaps **Today** / **This month** for
+  **5-hour limit** / **Weekly limit** tiles (percent, bar, reset time), each card shows its
+  **Context** size instead of the cost rows (yellow from 200k, red from 300k, like the
+  statusline), and the cost-audit panel is hidden. Cold re-writes in toasts and the events feed
+  are sized in tokens. Enterprise and API-key logins keep costs. `billing` in the config
+  overrides the detection either way.
 - **Cost audit (permanent)** — the meter is the truth and ccc's per-turn math is a hypothesis, so
   the daemon measures the hypothesis continuously. Every interval bounded by local quiet on both
   sides yields an independent (authoritative dollars, local dollars) pair; `ccc audit` aggregates
@@ -246,6 +256,7 @@ Windows: `%LOCALAPPDATA%\claude-companion\config\`):
   "toasts": true,
   "warnBeforeSeconds": 60,
   "monthlyBudgetUsd": 500,
+  "billing": "auto",
   "pricing": { "autoResolve": true, "refreshDays": 7 },
   "accountUsage": { "enabled": true, "pollSeconds": 300 },
   "guardian": {
@@ -295,10 +306,14 @@ Turning the optional features on/off:
 - **Turn signal** — `turnSignal.sound` (audible alert) and `turnSignal.flash` (dashboard flash)
   toggle independently; `turnSignal.enabled` and the rest of the block are config-only.
 - **Card view** — `dashboard.cardView`: `advanced` (default) is the full session card; `simple` keeps
-  only **Session cost**, **Cost / turn** and **Cold re-write**, stacked above the cache ring, and hides
+  only **Session cost**, **Cost / turn** and **Cold re-write** (just **Context** on a flat-fee plan), stacked above the cache ring, and hides
   the rest of the card (…by model, Switch model, Keep-warm, the context-prefix and fresh-chat notes).
   Simple also loads with every section below the cards folded, so the page is just the cards. View-only —
   the daemon still measures everything either way, so switching back shows the same numbers. Also in Controls.
+- **Billing** — `billing`: `auto` (default) reads Claude Code's login, treating Pro, Max and Team
+  as flat-fee and anything else as usage-billed; `flat` hides every dollar figure; `usage` shows them.
+  View-only: turns are still priced, so `ccc audit` keeps its history. Config-only, not in Controls;
+  the daemon re-reads the login each minute, so a `/login` to another account needs no restart.
 - **Model-rate auto-resolve** — `pricing.autoResolve` looks up rates and cache minimums for
   models released after this build (see the feature note above); `pricing.refreshDays`
   re-checks already-resolved values. Off ⇒ an unknown model costs $0, its cache minimum falls
@@ -362,7 +377,7 @@ audio endpoint's spin-up clips the silence instead of the start of the sound.
 ## Development
 
 ```sh
-npm test          # vitest (327 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, stop hook, config migration, turn-signal, namer, launcher, controls, account-usage, window-sampler, install-marker, price-docs, price-resolver)
+npm test          # vitest (369 tests: adapter, economics, tailer, tracker, guardian, advisor, keep-warm, attribution, stop hook, config migration, turn-signal, namer, launcher, controls, account-usage, window-sampler, install-marker, price-docs, price-resolver, plan, statusline)
 npm run typecheck
 ```
 

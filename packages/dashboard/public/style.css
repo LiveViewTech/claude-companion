@@ -89,6 +89,10 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
   padding: 14px 16px;
 }
 .card.stale { opacity: 0.55; }
+/* Flat-fee plan (body.plan-flat, from the daemon's billing resolution): dollar figures go,
+   context size and the 5-hour / weekly limit tiles take their place. */
+body.plan-flat .cost-only,
+body:not(.plan-flat) .flat-only { display: none; }
 .card-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
 /* The text column must be allowed to shrink below its content width, otherwise a long
    unbreakable directory path pushes the head-actions off the right edge of the card. */
@@ -154,6 +158,9 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 /* ccc's total and Claude Code's own disagree by more than rounding — hover for both. */
 .stats dd.cost.drift { color: var(--warn); cursor: help; }
 .stats dd.carry.carry-red .carry-val { color: var(--critical); }
+/* Same bands as the statusline's ctx figure. */
+.stats dd.ctx.ctx-yellow { color: var(--warn); }
+.stats dd.ctx.ctx-red { color: var(--critical); }
 .prefix-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
 .carry-models-row dd.carry-models { font-weight: 400; font-size: 12px; color: var(--ink-2); }
 /* Keep each model+cost together on its own line (JS renders one .carry-model-line per model). */

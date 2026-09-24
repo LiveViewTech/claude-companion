@@ -30,6 +30,19 @@ export interface CccConfig {
    */
   monthlyBudgetUsd: number | null;
   /**
+   * How this account is billed, which decides whether dollar figures are shown at all.
+   *
+   *   "auto"  — read Claude Code's login: Pro, Max and Team are flat, anything else
+   *             (API key, Enterprise) is usage-billed
+   *   "flat"  — a flat monthly fee: the statusline, dashboard and toasts drop every dollar
+   *             figure and show context size and the 5-hour / weekly usage windows instead
+   *   "usage" — billed per token: show costs
+   *
+   * View-only. The daemon still prices every turn, so `ccc audit` and a switch back to
+   * "usage" have the full history.
+   */
+  billing: "auto" | "flat" | "usage";
+  /**
    * Automatic rate lookup for models released after this build. When a transcript
    * carries a model the built-in table can't price, the daemon fetches Anthropic's
    * published pricing table and caches the rate — otherwise every cost for that model
@@ -211,6 +224,7 @@ export const DEFAULTS: CccConfig = {
   toasts: true,
   warnBeforeSeconds: 60,
   monthlyBudgetUsd: null,
+  billing: "auto",
   pricing: { autoResolve: true, refreshDays: 7 },
   accountUsage: { enabled: true, pollSeconds: 300 },
   audit: { enabled: true, quietMinutes: 15, alertOnDrift: true },

@@ -8,6 +8,7 @@ import type { Store } from "./store.ts";
 import { classStats, computeExactAttribution, toolLeaderboard } from "./attribution.ts";
 import { coldRewriteSummary, projectHabits } from "./habits.ts";
 import { awayCoverageMs } from "./awake-tracker.ts";
+import type { PlanInfo } from "./plan.ts";
 
 /**
  * What the "today" meter figure is measured from. "midnight" is the real thing; the
@@ -16,6 +17,13 @@ import { awayCoverageMs } from "./awake-tracker.ts";
  * broke while the machine was up (a bug worth surfacing).
  */
 export type DayBaselineKind = "midnight" | "pre-away" | "stale";
+
+/** One usage window as the dashboard's limit tiles show it. */
+export interface LimitReading {
+  pct: number;
+  /** Epoch ms the window resets at; null when not reported. */
+  resetsAt: number | null;
+}
 
 export interface DayBaseline {
   /** When the baseline reading was last confirmed. */
@@ -54,6 +62,8 @@ export class Server {
   private port: number;
   /** Monthly spend cap (USD) for the dashboard "this month" tile; null = no cap. Set by index.ts. */
   monthlyBudgetUsd: number | null = null;
+  /** Resolved billing plan; a flat plan hides dollar figures on the dashboard. Set by index.ts. */
+  plan: () => PlanInfo = () => ({ subscriptionType: null, flat: false });
   /**
    * How old the account meter may get before its readings stop being usable. Set by
    * index.ts from the poll interval. Past this, "today" is withheld rather than
@@ -229,12 +239,36 @@ export class Server {
     return normPath(s.cwd) === normPath(this.hideSessionsUnder);
   }
 
-  private sessionsPayload(): { sessions: SessionState[]; now: number } {
+  /** `plan` rides along so the dashboard renders its first cards without a dollar-figure flash. */
+  private sessionsPayload(): { sessions: SessionState[]; now: number; plan: PlanInfo } {
     const sessions = this.tracker.all
       .filter((s) => s.lastTurnAt != null && !this.isHidden(s))
       .sort((a, b) => (b.lastTurnAt ?? 0) - (a.lastTurnAt ?? 0))
       .slice(0, 50);
-    return { sessions, now: Date.now() };
+    return { sessions, now: Date.now(), plan: this.plan() };
+  }
+
+  /**
+   * The newest 5-hour / weekly reading across all sessions. The windows are account-wide,
+   * and each session's guardian state holds whichever source reported last (a statusline
+   * courier or the OAuth poll), so the freshest session is the freshest reading.
+   */
+  private limitsPayload(): { fiveHour: LimitReading | null; sevenDay: LimitReading | null; at: number | null } {
+    let best: SessionState | null = null;
+    for (const s of this.tracker.all) {
+      const g = s.guardian;
+      if (g.updatedAt == null || (g.fiveHourPct == null && g.sevenDayPct == null)) continue;
+      if (!best || g.updatedAt > (best.guardian.updatedAt ?? 0)) best = s;
+    }
+    if (!best) return { fiveHour: null, sevenDay: null, at: null };
+    const g = best.guardian;
+    const reading = (pct: number | null, resetsAtSec: number | null): LimitReading | null =>
+      pct == null ? null : { pct, resetsAt: resetsAtSec != null ? resetsAtSec * 1000 : null };
+    return {
+      fiveHour: reading(g.fiveHourPct, g.fiveHourResetsAt),
+      sevenDay: reading(g.sevenDayPct, g.sevenDayResetsAt),
+      at: g.updatedAt,
+    };
   }
 
   private dayPayload(): {
@@ -248,6 +282,8 @@ export class Server {
     monthStart: number;
     monthlyBudgetUsd: number | null;
     account: unknown;
+    plan: PlanInfo;
+    limits: ReturnType<Server["limitsPayload"]>;
   } {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -268,6 +304,8 @@ export class Server {
       monthStart,
       monthlyBudgetUsd: this.monthlyBudgetUsd,
       account: this.accountUsage?.() ?? null,
+      plan: this.plan(),
+      limits: this.limitsPayload(),
     };
   }
 

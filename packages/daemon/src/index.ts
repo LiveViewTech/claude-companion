@@ -21,6 +21,7 @@ import { AwakeTracker } from "./awake-tracker.ts";
 import { Auditor } from "./audit.ts";
 import { WindowSampler } from "./window-sampler.ts";
 import { PriceResolver } from "./price-resolver.ts";
+import { readSubscriptionType, resolvePlan, type PlanInfo } from "./plan.ts";
 
 /**
  * Toast an audit finding at most once a day per subject, and record it either way. A
@@ -69,6 +70,26 @@ export async function main(): Promise<void> {
   const watcher = new TranscriptWatcher(claudeProjectsDir(), tracker);
   const server = new Server(tracker, store, cfg.port);
   server.monthlyBudgetUsd = cfg.monthlyBudgetUsd;
+
+  // Billing plan. Re-read each minute because a `/login` to another account changes it.
+  // global.json carries it to the statusline, which has no other way to learn the config
+  // override.
+  let plan: PlanInfo = resolvePlan(cfg.billing, readSubscriptionType());
+  stateWriter.writeGlobal({ plan });
+  const planTimer = setInterval(() => {
+    const next = resolvePlan(cfg.billing, readSubscriptionType());
+    if (next.flat === plan.flat && next.subscriptionType === plan.subscriptionType) return;
+    plan = next;
+    stateWriter.writeGlobal({ plan });
+  }, 60_000);
+  planTimer.unref();
+  server.plan = () => plan;
+  /** Size of a cold re-write for a toast: dollars on a usage plan, tokens on a flat one. */
+  const rewriteText = (sessionId: string, usd: number): string => {
+    if (!plan.flat) return `~$${usd.toFixed(2)}`;
+    const tok = tracker.get(sessionId)?.prefixTokens ?? 0;
+    return `the whole context (${Math.round(tok / 1000)}K tokens)`;
+  };
   server.pricingStatus = () => priceResolver.status;
 
   // Account usage: the claude.ai meter itself, so the month tile matches the website.
@@ -156,7 +177,7 @@ export async function main(): Promise<void> {
     toast(
       {
         title: "Claude cache expiring soon",
-        message: `${s?.projectSlug ?? sessionId}: ~60s left. Reply now or the next prompt re-writes ~$${rewriteCostUsd.toFixed(2)}.`,
+        message: `${s?.projectSlug ?? sessionId}: ~60s left. Reply now or the next prompt re-writes ${rewriteText(sessionId, rewriteCostUsd)}.`,
       },
       cfg.toasts,
     );
@@ -167,7 +188,9 @@ export async function main(): Promise<void> {
     toast(
       {
         title: "Claude cache expired",
-        message: `${s?.projectSlug ?? sessionId}: next prompt pays a cold re-write (~$${rewriteCostUsd.toFixed(2)}).`,
+        message: plan.flat
+          ? `${s?.projectSlug ?? sessionId}: next prompt re-writes ${rewriteText(sessionId, rewriteCostUsd)}.`
+          : `${s?.projectSlug ?? sessionId}: next prompt pays a cold re-write (~$${rewriteCostUsd.toFixed(2)}).`,
       },
       cfg.toasts,
     );
@@ -177,7 +200,9 @@ export async function main(): Promise<void> {
     toast(
       {
         title: "Cold cache re-write",
-        message: `Session paid $${costUsd.toFixed(2)} to re-read history after ${Math.round(gapSeconds / 60)} min idle.`,
+        message: plan.flat
+          ? `Session re-wrote ${rewriteText(sessionId, costUsd)} after ${Math.round(gapSeconds / 60)} min idle.`
+          : `Session paid $${costUsd.toFixed(2)} to re-read history after ${Math.round(gapSeconds / 60)} min idle.`,
       },
       cfg.toasts,
     );

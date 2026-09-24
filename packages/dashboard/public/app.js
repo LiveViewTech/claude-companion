@@ -13,6 +13,9 @@ const activeEl = document.getElementById("active-count");
 const daemonEl = document.getElementById("daemon-status");
 const tpl = document.getElementById("card-tpl");
 
+/** Flat-fee plan (Pro/Max/Team, or `billing: "flat"`): no dollar figures anywhere on the page. */
+let flatPlan = false;
+
 /** sessionId -> state (from daemon) */
 const sessions = new Map();
 /** sessionId -> card element */
@@ -85,7 +88,9 @@ const kTok = (v) => (v >= 1000 ? `${Math.round(v / 1000)}k tok` : `${v} tok`);
 function connect() {
   const es = new EventSource("/events");
   es.addEventListener("hello", (e) => {
-    const { sessions: list } = JSON.parse(e.data);
+    const { sessions: list, plan } = JSON.parse(e.data);
+    // The habits table loaded before this told us the plan; redo it if the plan differs.
+    if (setPlan(plan)) refreshAnalytics();
     for (const s of list) sessions.set(s.sessionId, s);
     setDaemon(true);
     refreshDayCost();
@@ -114,10 +119,25 @@ function setDaemon(ok) {
     : '<span class="dot dot-bad"></span>offline';
 }
 
+/** Apply the daemon's plan. The CSS swaps the tiles and card rows; returns true when it changed. */
+function setPlan(plan) {
+  const flat = !!(plan && plan.flat);
+  document.body.classList.toggle("plan-flat", flat);
+  if (flat === flatPlan) return false;
+  flatPlan = flat;
+  return true;
+}
+
 async function refreshDayCost() {
   try {
     const r = await fetch("/api/day");
     const day = await r.json();
+    // Card text and the habits table differ by plan too, not just what CSS hides.
+    if (setPlan(day.plan)) {
+      renderAll();
+      refreshAnalytics();
+    }
+    renderLimits(day.limits);
     renderDay(day);
     const { monthCostUsd, monthlyBudgetUsd, account, meterStale } = day;
     const acct = account && account.usage;
@@ -208,6 +228,51 @@ function setDayNote(text, tip, warn) {
   dayNoteEl.title = tip;
   dayCostEl.classList.remove("warn");
   dayCostEl.title = tip;
+}
+
+/** Short clock time for a reset: "3:20 PM" within a day, "Thu 9:59 PM" beyond. */
+function resetWhen(ms) {
+  const opts = ms - Date.now() < 86_400_000 ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" };
+  return new Date(ms).toLocaleString([], opts);
+}
+
+/**
+ * Flat-plan tiles: the 5-hour and weekly usage windows, from the freshest reading any
+ * session has (statusline courier or account poll). A window whose reset time has passed
+ * shows no number: the old percentage is gone and nothing has reported the new one yet.
+ */
+function renderLimits(limits) {
+  const at = limits && limits.at;
+  const one = (key, w, word) => {
+    const valEl = document.getElementById(`limit-${key}`);
+    const noteEl = document.getElementById(`limit-${key}-note`);
+    const fillEl = document.getElementById(`limit-${key}-fill`);
+    if (!valEl || !noteEl || !fillEl) return;
+    if (!w) {
+      valEl.textContent = "–";
+      noteEl.textContent = "";
+      fillEl.style.width = "0%";
+      valEl.title = `No ${word} reading yet. Claude Code reports it to the statusline on each turn.`;
+      return;
+    }
+    const src = at ? ` Last reading ${new Date(at).toLocaleString()}.` : "";
+    if (w.resetsAt && w.resetsAt <= Date.now()) {
+      valEl.textContent = "–";
+      noteEl.textContent = `reset ${resetWhen(w.resetsAt)}`;
+      fillEl.style.width = "0%";
+      valEl.title = `The ${word} window reset at ${new Date(w.resetsAt).toLocaleString()} and nothing has reported it since.${src}`;
+      return;
+    }
+    const pct = Math.round(w.pct);
+    valEl.textContent = `${pct}%`;
+    noteEl.textContent = w.resetsAt ? `resets ${resetWhen(w.resetsAt)}` : "";
+    fillEl.style.width = `${Math.min(100, pct)}%`;
+    // Same 80/90 thresholds as the statusline and the guardian; the % label carries it too.
+    fillEl.style.background = pct >= 90 ? "var(--critical)" : pct >= 80 ? "var(--warn)" : "var(--good)";
+    valEl.title = `${pct}% of the ${word} usage window, account-wide.${src}`;
+  };
+  one("5h", limits && limits.fiveHour, "5-hour");
+  one("7d", limits && limits.sevenDay, "weekly");
 }
 
 /** Month tile: value, optional "/$cap" + budget bar, and a source note ("account" or "est."). */
@@ -323,6 +388,12 @@ function fillCard(card, s) {
         `difference ${usd(Math.abs(official - s.sessionCostUsd))})`;
   costEl.classList.toggle("drift", official !== null && Math.abs(official - s.sessionCostUsd) > Math.max(0.05, official * 0.1));
 
+  // Flat plan: the context size itself, banded like the statusline's ctx figure.
+  const ctxEl = card.querySelector(".ctx");
+  const prefix = Number(s.prefixTokens || 0);
+  ctxEl.textContent = prefix ? kTok(prefix) : "–";
+  ctxEl.className = `ctx ${prefix >= 300_000 ? "ctx-red" : prefix >= 200_000 ? "ctx-yellow" : ""}`;
+
   // "Start fresh?" indicator: what it costs to carry this context each turn.
   const tax = Number(s.prefixTaxUsd || 0);
   card.querySelector(".carry-model").textContent = s.model ? `(${prettyModel(s.model)})` : "";
@@ -353,7 +424,7 @@ function fillCard(card, s) {
   kwBtn.className = `kw-btn ${kw.armed ? "armed" : ""}`;
   const allow1h = !!(window.cccConfig && window.cccConfig.keepwarm && window.cccConfig.keepwarm.allow1hArm);
   kwInfo.textContent = kw.armed
-    ? `net ${kw.netSavedUsd >= 0 ? "+" : ""}${usd(Math.abs(kw.netSavedUsd))}`
+    ? (flatPlan ? "" : `net ${kw.netSavedUsd >= 0 ? "+" : ""}${usd(Math.abs(kw.netSavedUsd))}`)
     : s.ttlTier === "1h" && !allow1h
       ? "1h TTL"
       : (kw.reason || "");
@@ -413,19 +484,23 @@ async function refreshAnalytics() {
     ]);
     const cw = habits.coldRewritesWeek;
     document.getElementById("cold-week").textContent =
-      cw && cw.count > 0 ? `— cold re-writes this week: ${cw.count} costing ${usd(cw.totalUsd)}` : "— no cold re-writes recorded this week";
+      cw && cw.count > 0
+        ? `— cold re-writes this week: ${cw.count}${flatPlan ? "" : ` costing ${usd(cw.totalUsd)}`}`
+        : "— no cold re-writes recorded this week";
+    // Flat plan: drop the dollar column rather than show a figure nobody is billed.
+    const realized = flatPlan ? [] : ["Realized $"];
     document.getElementById("habits").innerHTML = table(
-      ["Project", "Gaps", ">5m", "<1h", "Expired", "Realized $", "Recommendation"],
+      ["Project", "Gaps", ">5m", "<1h", "Expired", ...realized, "Recommendation"],
       habits.projects.map((p) => [
         esc(shortSlug(p.projectSlug)),
         String(p.gaps),
         `${p.pctOver5m}%`,
         `${p.pctUnder1h}%`,
         String(p.expired),
-        usd(p.realizedRewriteUsd),
+        ...(flatPlan ? [] : [usd(p.realizedRewriteUsd)]),
         `<span class="rec">${esc(p.recommendation)}</span>`,
       ]),
-      [1, 2, 3, 4, 5],
+      flatPlan ? [1, 2, 3, 4] : [1, 2, 3, 4, 5],
     );
     document.getElementById("tools").innerHTML = table(
       ["Tool", "Calls", "Result chars", "Tokens (est)", "Tokens (exact subset)"],
@@ -600,8 +675,15 @@ function addFeedItem(kind, data) {
   const when = new Date().toLocaleTimeString();
   const s = sessions.get(data.sessionId);
   const proj = s ? shortSlug(s.projectSlug) : data.sessionId?.slice(0, 8) ?? "?";
-  const msg =
-    kind === "coldRewrite"
+  // Flat plan: a re-write is sized by the context it re-sends, not what it would cost.
+  const ctx = s && s.prefixTokens ? kTok(s.prefixTokens) : "the whole context";
+  const msg = flatPlan
+    ? kind === "coldRewrite"
+      ? `cold re-write of ${ctx} after ${Math.round(data.gapSeconds / 60)} min idle`
+      : kind === "expiryWarning"
+        ? `cache expires in ~60s — next prompt after expiry re-writes ${ctx}`
+        : `cache expired — next prompt re-writes ${ctx}`
+    : kind === "coldRewrite"
       ? `cold re-write cost ${usd(data.costUsd)} after ${Math.round(data.gapSeconds / 60)} min idle`
       : kind === "expiryWarning"
         ? `cache expires in ~60s — next prompt after expiry re-writes ${usd(data.rewriteCostUsd)}`

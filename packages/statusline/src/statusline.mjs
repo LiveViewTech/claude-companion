@@ -84,6 +84,16 @@ function main() {
     state = JSON.parse(fs.readFileSync(path.join(dir, "sessions", `${sanitize(sessionId)}.json`), "utf8"));
   } catch { /* daemon down or session unknown */ }
 
+  // Flat-fee plan (Pro/Max/Team): per-session dollars aren't what the user is billed, so
+  // they're left out. The daemon resolves the plan, config override included, into
+  // global.json. With the daemon down, `rate_limits` is the tell: only subscription seats
+  // get usage windows.
+  let flat = !!hasLimits;
+  try {
+    const g = JSON.parse(fs.readFileSync(path.join(dir, "global.json"), "utf8"));
+    if (typeof g?.plan?.flat === "boolean") flat = g.plan.flat;
+  } catch { /* daemon down or older daemon */ }
+
   const parts = [];
 
   // model · effort
@@ -100,7 +110,8 @@ function main() {
     const left = state.expiresAt - Date.now();
     const tier = state.ttlTier ?? "?";
     if (left <= 0) {
-      parts.push(`${RED}cache expired · rewrite $${(state.rewriteCostUsd ?? 0).toFixed(2)}${RESET}`);
+      const rewrite = flat ? "" : ` · rewrite $${(state.rewriteCostUsd ?? 0).toFixed(2)}`;
+      parts.push(`${RED}cache expired${rewrite}${RESET}`);
     } else {
       const col = left < 60_000 ? RED : left < 300_000 ? YELLOW : GREEN;
       parts.push(`${col}⏱ exp ${clockTime(state.expiresAt)}${RESET} ${DIM}(${tier})${RESET}`);
@@ -111,7 +122,7 @@ function main() {
 
   // session cost: prefer official client-side estimate from stdin, fall back to daemon math
   const cost = officialCost ?? state?.sessionCostUsd;
-  if (typeof cost === "number") parts.push(`$${cost.toFixed(2)}`);
+  if (!flat && typeof cost === "number") parts.push(`$${cost.toFixed(2)}`);
 
   // Context usage, in absolute tokens rather than percent-of-window. On a 1M-context model
   // a percentage reads reassuringly low exactly where it should alarm: 300K is "30% used"
