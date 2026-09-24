@@ -124,15 +124,16 @@ which is the only way to catch a profile that didn't take.
   macOS Terminal; common Linux emulators).
 - **Premium rate tiers are billed as billed** — a transcript's `usage` block reports which
   speed tier served the request and where inference ran, and both change the bill: fast mode
-  costs $10/$50 per MTok against Opus 5 / 4.8's $5/$25 (caching multipliers stack on top of
-  that, so a 1h write is $20), and `inference_geo: "us"` is 1.1x across every category on
-  Claude 4.6+. Costing a fast-mode session without those reads half of what it cost. Both are
-  taken from what the API reports rather than any local flag, they are applied per turn (a
-  `/fast` toggle mid-session changes the rate from the next turn on), they follow through to
-  every projection (cold re-write, cost/turn, keep-warm break-even), and they are stored per
-  turn so `ccc audit` can tell a rate premium apart from a per-request charge. A fast turn on
-  a model with no published fast rates is billed standard and reported by `ccc doctor` rather
-  than guessed at; `ccc prices` shows which models have a fast tier at all.
+  costs $10/$50 per MTok against Opus 5 / 4.8's $5/$25 and $8/$40 against Opus 5.5's $4/$20
+  (caching multipliers stack on top of that, so a 1h write on Opus 5 is $20), and
+  `inference_geo: "us"` is 1.1x across every category on Claude 4.6+. Costing a fast-mode
+  session without those reads half of what it cost. Both are taken from what the API reports
+  rather than any local flag, they are applied per turn (a `/fast` toggle mid-session changes
+  the rate from the next turn on), they follow through to every projection (cold re-write,
+  cost/turn, keep-warm break-even), and they are stored per turn so `ccc audit` can tell a rate
+  premium apart from a per-request charge. A fast turn on a model with no published fast rates
+  is billed standard and reported by `ccc doctor` rather than guessed at; `ccc prices` shows
+  which models have a fast tier at all.
 - **Cost visibility** — per-session and per-day $ from transcript usage × date-aware pricing;
   cold re-writes are detected and billed to a weekly "expiry cost you $X" number. The **This month**
   and **Today** tiles read Anthropic's own usage meter (the claude.ai Usage-page number, via the OAuth
@@ -217,7 +218,8 @@ which is the only way to catch a profile that didn't take.
   clobbered by a flattened scrape; and a failed or unparseable lookup leaves the model at a
   visible $0 rather than substituting a guess. The page carries base, fast-mode, and batch
   rates for the same model, so the parser keys on the 6-column base table and cross-checks
-  each row's published cache columns against the 1.25x/2x/0.1x multipliers — a mismatch means
+  each row's published cache columns against the 1.25x/2x/0.1x multipliers (or the model's own
+  read multiplier where the table records one, e.g. 0.05x on Opus 5.5) — a mismatch means
   either a misparse or that those constants went stale, and `ccc doctor` says so. Minimums are
   published as a bullet list rather than a table and are validated against the power-of-two
   shape every real value has. Fast-mode rates are read too, but only from inside the

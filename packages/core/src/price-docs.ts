@@ -1,4 +1,4 @@
-import { CACHE_READ_MULT, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT } from "./pricing.ts";
+import { builtInCacheReadMult, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT } from "./pricing.ts";
 import type { FastRates, PriceSpec } from "./types.ts";
 
 /**
@@ -17,12 +17,17 @@ import type { FastRates, PriceSpec } from "./types.ts";
  *     require exactly that shape and reject the 3-column tables outright.
  *
  *  2. A row could still be misread. The published cache columns are a derived check:
- *     they must equal base x {1.25, 2, 0.1}. A mismatch means either we misparsed or
+ *     they must equal base x {1.25, 2, 0.1}, or the model's own read multiplier where
+ *     the built-in table records one (Opus 5.5: 0.05x). A mismatch means either we misparsed or
  *     Anthropic changed the multipliers — both are reasons to refuse the row, and the
  *     latter is reported separately because it makes ccc's own constants stale.
  *
  *  3. Display names are not model ids ("Claude Opus 4.8" vs "claude-opus-4-8"), and
  *     rows carry qualifier text ("(deprecated)", "through August 31, 2026").
+ *
+ *  4. Price cells carry footnote markers ("$0.20 / MTok<sup>2</sup>"). The row-shape check
+ *     treats an unparseable cell as "not a price table", so an unstripped marker drops the
+ *     row without a word: that hid Opus 5.5, Fable 5.1, Mythos 5.1 and Sonnet 5.
  */
 
 /** Half-a-cent absolute plus a hair of relative slack — published figures are cent-rounded. */
@@ -44,7 +49,8 @@ export interface PriceDocParse {
   rows: ParsedPriceRow[];
   /**
    * Model ids whose published cache columns did NOT match base x our multipliers.
-   * Non-empty means CACHE_WRITE_5M_MULT / _1H_MULT / CACHE_READ_MULT may be stale —
+   * Non-empty means CACHE_WRITE_5M_MULT / _1H_MULT, or the read multiplier ccc has for
+   * that model (CACHE_READ_MULT unless its table entry sets cacheReadMult), may be stale —
    * surfaced by `ccc doctor` rather than silently dropped.
    */
   multiplierMismatch: string[];
@@ -56,8 +62,13 @@ export interface PriceDocParse {
 
 const PRICE_CELL = /^\$\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*MTok$/i;
 
+/** Footnote markers: HTML superscripts and markdown footnote refs ("[^2]"). */
+function stripFootnotes(s: string): string {
+  return s.replace(/<sup>[^<]*<\/sup>/gi, "").replace(/\[\^[^\]]*\]/g, "");
+}
+
 function parsePriceCell(cell: string): number | null {
-  const m = cell.trim().match(PRICE_CELL);
+  const m = stripFootnotes(cell).trim().match(PRICE_CELL);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
@@ -82,7 +93,7 @@ function parsePriceCell(cell: string): number | null {
  * word "and", which would otherwise shred one model name into unparseable fragments.
  */
 export function stripDocMarkup(s: string): string {
-  return s
+  return stripFootnotes(s)
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [label](url) -> label
     .replace(/\([^)]*\)/g, " ") // (deprecated), (retired, except on ...) -> drop
     .replace(/\*+/g, " "); // bold markers
@@ -209,7 +220,7 @@ export function parsePricingDoc(markdown: string): PriceDocParse {
     if (
       !approxEqual(write5m, base * CACHE_WRITE_5M_MULT) ||
       !approxEqual(write1h, base * CACHE_WRITE_1H_MULT) ||
-      !approxEqual(read, base * CACHE_READ_MULT)
+      !approxEqual(read, base * builtInCacheReadMult(modelId))
     ) {
       // Either a misparse or the multipliers moved. Refuse the row either way.
       if (!multiplierMismatch.includes(modelId)) multiplierMismatch.push(modelId);
