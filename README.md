@@ -2,8 +2,8 @@
 
 Token/cache cockpit for Claude Code: cost visibility, a live prompt-cache-TTL countdown,
 self-measuring cache keep-warm, a prompt advisor, and a guardian that tells Claude to write a
-handoff and wrap up before the session gets expensive — whether that's a usage limit closing in,
-a context that has grown too costly to keep re-reading, or keep-warm running out of runway.
+handoff and wrap up before the session gets expensive — whether that's a usage limit closing in
+or keep-warm running out of runway.
 
 Linux-first, works on Windows and macOS. No native build steps (Node 22.18+ / 24+,
 uses built-in `node:sqlite` and native TypeScript execution — no compile).
