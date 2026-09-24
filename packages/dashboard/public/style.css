@@ -57,6 +57,11 @@ body {
   background: var(--surface-1);
   position: sticky;
   top: 0;
+  /* Without a z-index the sticky header shares the page's root stacking layer, and every
+     later element that forms its own layer paints over it on scroll: the rotated ring
+     SVG, the positioned ring wrapper, a faded (opacity) expired card. Stays under the
+     turn-flash overlay (9999). */
+  z-index: 10;
   flex-wrap: wrap;
 }
 .brand { font-weight: 650; letter-spacing: 0.2px; }
