@@ -168,12 +168,8 @@ body:not(.plan-flat) .flat-only { display: none; }
 .carry-models-row { align-items: start; }
 .carry-hint { font-size: 11px; }
 
-/* Simple card view: session cost / cost-per-turn / cold re-write stacked under the card head,
-   with the cache ring centered below them. Everything else on the card is hidden. The card head
-   (name, tier badge, dismiss, open) is untouched — "simple" only trims what's below it. */
-.view-simple .card-body { flex-direction: column; align-items: stretch; gap: 12px; }
-.view-simple .stats { order: 1; }
-.view-simple .ring-wrap { order: 2; align-self: center; }
+/* Simple card view: same layout as advanced (ring left, stats right), with the extra rows
+   hidden. The card head (name, tier badge, dismiss, open) is untouched. */
 .view-simple .carry-models-row,
 .view-simple .switch-row,
 .view-simple .kw-row,
