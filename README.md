@@ -40,7 +40,7 @@ Restart Claude Code sessions after install (hook config snapshots at startup).
 |---|---|
 | `ccc install [--dry-run]` / `ccc uninstall` | Register/remove statusline + hooks (surgical edits, timestamped backups) |
 | `ccc prices [--refresh]` | Model rates in use, marked built-in vs auto-resolved (with age); `--refresh` re-reads the published table |
-| `ccc audit [--days N] [--backfill] [--accept] [--json]` | Reconcile ccc's cost math against Anthropic's meter; `--backfill` rebuilds the period from stored samples, `--accept` freezes the current per-model ratios as the drift baseline |
+| `ccc audit [--days N] [--backfill] [--accept] [--reprice [--dry-run]] [--json]` | Reconcile ccc's cost math against Anthropic's meter; `--backfill` rebuilds the period from stored samples, `--accept` freezes the current per-model ratios as the drift baseline, `--reprice` re-costs stored turns at current rates after a pricing change (costs are fixed when a turn is recorded) |
 | `ccc launch --ttl 1h\|5m [-- args]` | Start `claude` with a cache-TTL profile (`ENABLE_PROMPT_CACHING_1H=1` / `FORCE_PROMPT_CACHING_5M=1`) |
 | `ccc code [dir] --ttl 1h\|5m` | Same, for VS Code (extension sessions inherit the env) |
 | `ccc daemon start\|restart\|stop\|status`, `ccc ensure-daemon` | Daemon control (SessionStart hook auto-starts it) |
