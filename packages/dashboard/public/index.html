@@ -70,11 +70,11 @@
         <input type="checkbox" id="ctrl-keepwarm" />
         <span>Keep-warm <span class="soft">— allow cache-keeping pings</span></span>
       </label>
-      <label class="ctrl" title="Arm keep-warm on sessions measured at the 5-minute tier (Claude Pro). The 5m cache dies between turns on any real pause, so pinging is nearly always cheaper than the cold re-write it avoids.">
+      <label class="ctrl" title="Arm keep-warm on sessions measured at the 5-minute tier (API key / usage credits). The 5m cache dies between turns on any real pause, so pinging is nearly always cheaper than the cold re-write it avoids.">
         <input type="checkbox" id="ctrl-arm-5m" />
         <span>Keep-warm 5m tier <span class="soft">— ping freely (Pro)</span></span>
       </label>
-      <label class="ctrl" title="Arm keep-warm on sessions measured at the 1-hour tier (Enterprise / API). A 1h cache survives normal think-time, so pings only pay off across a real walk-away — use a low ping cap and let it escalate to a handoff rather than ping all night.">
+      <label class="ctrl" title="Arm keep-warm on sessions measured at the 1-hour tier (Claude subscription). A 1h cache survives normal think-time, so pings only pay off across a real walk-away — use a low ping cap and let it escalate to a handoff rather than ping all night.">
         <input type="checkbox" id="ctrl-arm-1h" />
         <span>Keep-warm 1h tier <span class="soft">— ping across walk-aways</span></span>
       </label>
