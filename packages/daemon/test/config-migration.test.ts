@@ -78,8 +78,16 @@ describe("keepwarm config migration (pre-tier -> per-tier)", () => {
   });
 
   it("honors an explicit accountType", async () => {
-    const cfg = await loadFrom({ keepwarm: { accountType: "pro" } });
-    expect(cfg.keepwarm.accountType).toBe("pro");
+    expect((await loadFrom({ keepwarm: { accountType: "subscription" } })).keepwarm.accountType).toBe("subscription");
+    expect((await loadFrom({ keepwarm: { accountType: "api" } })).keepwarm.accountType).toBe("api");
+  });
+
+  it("migrates the pre-fix account types: pro -> subscription, enterprise -> auto", async () => {
+    // "pro" seeded 5m, but a subscription gets the 1h cache. "Enterprise / API" named
+    // accounts on both tiers, so it can't be mapped to one.
+    expect((await loadFrom({ keepwarm: { accountType: "pro" } })).keepwarm.accountType).toBe("subscription");
+    expect((await loadFrom({ keepwarm: { accountType: "enterprise" } })).keepwarm.accountType).toBe("auto");
+    expect((await loadFrom({ keepwarm: { accountType: "bogus" } })).keepwarm.accountType).toBe("auto");
   });
 
   it("defaults handoffPath, and keeps a configured one through a partial guardian block", async () => {

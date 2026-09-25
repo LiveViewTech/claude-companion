@@ -126,11 +126,11 @@ export interface CccConfig {
      * this is ignored. So a wrong setting here costs at most one idle period, never a
      * mispriced ping, and a machine that switches between accounts still behaves correctly.
      *
-     *   "auto"       — no seeding; wait for the first measured cache write (safest)
-     *   "pro"        — Claude Pro subscription seat: 5-minute cache
-     *   "enterprise" — Enterprise seat or API token: 1-hour cache
+     *   "auto"         — no seeding; wait for the first measured cache write (safest)
+     *   "subscription" — Claude subscription within plan usage: Claude Code requests 1-hour cache
+     *   "api"          — API key, cloud provider, or subscription usage credits: 5-minute cache
      */
-    accountType: "auto" | "pro" | "enterprise";
+    accountType: "auto" | "subscription" | "api";
     /**
      * Policy per TTL tier, keyed by the tier the session actually measured. The two tiers
      * want opposite behavior, which is why this is not one global setting:
@@ -266,10 +266,29 @@ export function configFile(): string {
  * per-tier policy existed. `allow1hArm` was a single gate on the 1h tier and
  * `maxPingsPerIdle` a single cap across both tiers.
  */
-type LegacyKeepwarm = Partial<CccConfig["keepwarm"]> & {
+type LegacyKeepwarm = Omit<Partial<CccConfig["keepwarm"]>, "accountType"> & {
   allow1hArm?: boolean;
   maxPingsPerIdle?: number;
+  accountType?: CccConfig["keepwarm"]["accountType"] | LegacyAccountType;
 };
+
+/**
+ * Account types from before the TTL mapping was corrected. "pro" seeded 5m and "enterprise"
+ * seeded 1h, the reverse of what Claude Code does: a subscription gets the 1h cache and an
+ * API key gets 5m.
+ */
+type LegacyAccountType = "pro" | "enterprise";
+
+/**
+ * "pro" named the account correctly and only had the wrong tier, so it becomes
+ * "subscription". "enterprise" was labelled "Enterprise / API", which covers accounts on
+ * both tiers, so it falls back to "auto" and the first measured write decides.
+ */
+function migrateAccountType(v: LegacyKeepwarm["accountType"]): CccConfig["keepwarm"]["accountType"] {
+  if (v === "pro") return "subscription";
+  if (v === "subscription" || v === "api") return v;
+  return "auto";
+}
 
 /**
  * Fold a pre-tier keepwarm block into the per-tier shape. The legacy keys are honored
@@ -281,6 +300,7 @@ function migrateKeepwarm(raw: LegacyKeepwarm | undefined): CccConfig["keepwarm"]
   const base: CccConfig["keepwarm"] = {
     ...DEFAULTS.keepwarm,
     ...(raw ?? {}),
+    accountType: migrateAccountType(raw?.accountType),
     tiers: {
       "5m": { ...DEFAULTS.keepwarm.tiers["5m"], ...(raw?.tiers?.["5m"] ?? {}) },
       "1h": { ...DEFAULTS.keepwarm.tiers["1h"], ...(raw?.tiers?.["1h"] ?? {}) },

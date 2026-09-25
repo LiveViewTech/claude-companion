@@ -49,12 +49,12 @@
       <summary>Controls <span class="soft">(saved to config.json; take effect immediately)</span></summary>
       <div class="ctrl-grid">
       <div class="ctrl-row">
-      <label class="ctrl" title="Which account this machine's sessions run on. Only used to guess a session's cache TTL before its first cache write — once a turn reports the real tier, the measured value wins and this is ignored. Leave on auto unless you want keep-warm active from the very first turn.">
+      <label class="ctrl" title="Which account this machine's sessions run on. Only used to guess a session's cache TTL before its first cache write — once a turn reports the real tier, the measured value wins and this is ignored. A subscription that goes over its plan limit draws on usage credits and drops to the 5 min cache. Leave on auto unless you want keep-warm active from the very first turn.">
         <span>Account type</span>
         <select id="ctrl-account-type">
           <option value="auto">auto — detect from usage</option>
-          <option value="pro">Claude Pro — 5 min cache</option>
-          <option value="enterprise">Enterprise / API — 1 hr cache</option>
+          <option value="subscription">Claude subscription — 1 hr cache</option>
+          <option value="api">API key / usage credits — 5 min cache</option>
         </select>
       </label>
       <label class="ctrl" title="Card density. Advanced is the full card. Simple keeps only session cost, cost/turn and cold re-write (context size on a flat-fee plan), stacked above the cache ring — everything else on the card is hidden.">

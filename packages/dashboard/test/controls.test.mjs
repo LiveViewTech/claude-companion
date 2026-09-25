@@ -287,7 +287,7 @@ describe("keep-warm / guardian control dependencies", () => {
       expect(document.getElementById(id), id).not.toBeNull();
     }
     const opts = [...document.getElementById("ctrl-account-type").options].map((o) => o.value);
-    expect(opts).toEqual(["auto", "pro", "enterprise"]);
+    expect(opts).toEqual(["auto", "subscription", "api"]);
   });
 
   it("disables every keep-warm-dependent control when keep-warm is off", async () => {
@@ -340,11 +340,11 @@ describe("keep-warm / guardian control dependencies", () => {
   it("reflects the per-tier values", async () => {
     globalThis.fetch = vi.fn(async () =>
       jsonResponse(
-        cfg({ enabled: true, accountType: "pro", tiers: { "5m": { arm: false, maxPingsPerIdle: 9, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 4, escalateToHandoff: false } } }, { action: "handoff" }),
+        cfg({ enabled: true, accountType: "api", tiers: { "5m": { arm: false, maxPingsPerIdle: 9, escalateToHandoff: false }, "1h": { arm: true, maxPingsPerIdle: 4, escalateToHandoff: false } } }, { action: "handoff" }),
       ),
     );
     await controls.refreshControls();
-    expect(document.getElementById("ctrl-account-type").value).toBe("pro");
+    expect(document.getElementById("ctrl-account-type").value).toBe("api");
     expect(document.getElementById("ctrl-arm-5m").checked).toBe(false);
     expect(document.getElementById("ctrl-cap-1h").value).toBe("4");
     expect(document.getElementById("ctrl-escalate-1h").checked).toBe(false);

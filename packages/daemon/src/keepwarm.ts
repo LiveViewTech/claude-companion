@@ -57,10 +57,10 @@ export class KeepWarm {
   tierFor(state: SessionState): TtlTier | null {
     if (state.ttlTier != null) return state.ttlTier;
     switch (this.cfg.keepwarm.accountType) {
-      case "pro":
-        return "5m";
-      case "enterprise":
+      case "subscription":
         return "1h";
+      case "api":
+        return "5m";
       default:
         return null;
     }

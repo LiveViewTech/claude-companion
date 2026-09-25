@@ -113,7 +113,7 @@ describe("KeepWarm gates", () => {
   });
 
   it("seeds the tier from accountType until a cache write is measured", () => {
-    const mk = (accountType: "auto" | "pro" | "enterprise") =>
+    const mk = (accountType: "auto" | "subscription" | "api") =>
       new KeepWarm({
         tracker,
         store,
@@ -125,15 +125,15 @@ describe("KeepWarm gates", () => {
     const s = tracker.get(SID)!;
     expect(s.ttlTier).toBeNull();
     expect(mk("auto").tierFor(s)).toBeNull();
-    expect(mk("pro").tierFor(s)).toBe("5m");
-    expect(mk("enterprise").tierFor(s)).toBe("1h");
+    expect(mk("subscription").tierFor(s)).toBe("1h");
+    expect(mk("api").tierFor(s)).toBe("5m");
   });
 
   it("a measured tier always beats the accountType hint", () => {
     const kw = new KeepWarm({
       tracker,
       store,
-      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, accountType: "pro" } },
+      cfg: { ...DEFAULTS, keepwarm: { ...DEFAULTS.keepwarm, accountType: "api" } },
       onEvent: (kind, sid) => events.push({ kind, sid }),
     });
     tracker.ingest(turn({ uuid: "a", ts: new Date().toISOString(), w1h: 100_000 }), "proj", true);

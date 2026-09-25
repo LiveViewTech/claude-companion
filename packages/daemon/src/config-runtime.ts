@@ -2,7 +2,7 @@ import type { CccConfig } from "./config.ts";
 
 const GUARDIAN_ACTIONS: readonly CccConfig["guardian"]["action"][] = ["off", "notify-only", "wrapup", "handoff"];
 const CARD_VIEWS: readonly CccConfig["dashboard"]["cardView"][] = ["simple", "advanced"];
-const ACCOUNT_TYPES: readonly CccConfig["keepwarm"]["accountType"][] = ["auto", "pro", "enterprise"];
+const ACCOUNT_TYPES: readonly CccConfig["keepwarm"]["accountType"][] = ["auto", "subscription", "api"];
 const TTL_TIERS = ["5m", "1h"] as const;
 
 /** The live-updatable subset of the config the dashboard can PATCH (each block optional/partial). */
