@@ -17,7 +17,7 @@ import {
 } from "@ccc/core";
 import type { Store } from "./store.ts";
 
-const CANDIDATE_MODELS = ["claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
+const CANDIDATE_MODELS = ["claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5"];
 
 export interface TrackerEvents {
   /** Session state changed (new turn ingested, expiry, etc.). */
@@ -280,7 +280,8 @@ export class SessionTracker extends EventEmitter<TrackerEvents> {
       state.prefixTokens = last?.prefix_tok ?? 0;
       // Restore the premium modifiers with the counters, or a restart would quote a
       // fast-mode session's next re-write at half price until its next turn lands.
-      const mods: RateMods = { speed: last?.speed ?? undefined, geo: last?.geo ?? undefined };
+      const mods: RateMods = { speed: last?.speed ?? undefined, geo: last?.geo ?? undefined,
+        promptTokens: last?.prefix_tok };
       state.rateMods = mods;
       if (state.ttlTier && state.model) {
         state.rewriteCostUsd = rewriteCostUsd(state.prefixTokens, state.ttlTier, state.model, mods);

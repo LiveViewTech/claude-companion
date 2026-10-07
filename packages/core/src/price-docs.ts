@@ -1,5 +1,5 @@
 import { builtInCacheReadMult, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT } from "./pricing.ts";
-import type { FastRates, PriceSpec } from "./types.ts";
+import type { FastRates, LongContextRates, PriceSpec } from "./types.ts";
 
 /**
  * Parser for Anthropic's published pricing table, so a newly-released model can be
@@ -42,6 +42,8 @@ export interface ParsedPriceRow {
   outputPerM: number;
   /** Premium fast-mode rates, when the page's fast-mode table lists this model. */
   fast?: FastRates;
+  /** Rates for prompts over a size threshold, from a second "(for prompts over N tokens)" row. */
+  longContext?: LongContextRates;
 }
 
 export interface PriceDocParse {
@@ -227,6 +229,19 @@ export function parsePricingDoc(markdown: string): PriceDocParse {
       continue;
     }
 
+    // Length-tiered models publish two rows: "(for prompts up to N tokens)" and
+    // "(for prompts over N tokens)". The second is the long-context tier of the first,
+    // not a duplicate; the first row still wins the base rate.
+    const over = cells[0]!.match(/prompts?\s+over\s+([\d,]+)\s+tokens/i);
+    if (over) {
+      const overTokens = Number(over[1]!.replace(/,/g, ""));
+      const baseRow = rows.find((r) => r.modelId === modelId);
+      if (baseRow && Number.isInteger(overTokens) && overTokens > 0 && base > baseRow.inputPerM) {
+        baseRow.longContext = { overTokens, inputPerM: base, outputPerM: output };
+        continue;
+      }
+    }
+
     if (seen.has(modelId)) {
       if (!duplicates.includes(modelId)) duplicates.push(modelId);
       continue; // first row wins — see PriceDocParse.duplicates
@@ -341,7 +356,9 @@ export function specsFor(parse: PriceDocParse, wanted: Iterable<string>): Record
   const out: Record<string, PriceSpec> = {};
   for (const r of parse.rows) {
     if (want.has(r.modelId)) {
-      out[r.modelId] = { inputPerM: r.inputPerM, outputPerM: r.outputPerM, ...(r.fast ? { fast: r.fast } : {}) };
+      out[r.modelId] = { inputPerM: r.inputPerM, outputPerM: r.outputPerM, ...(r.fast ? { fast: r.fast } : {}),
+        ...(r.longContext ? { longContext: r.longContext } : {}),
+      };
     }
   }
   return out;

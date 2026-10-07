@@ -212,6 +212,19 @@ export interface PriceSpec {
    * standard one does.
    */
   cacheReadMult?: number;
+  /**
+   * Higher rates for prompts over `overTokens` (Haiku 5.5: $0.50/$2.50 over 100k, against
+   * $0.10/$0.50 below). The whole request bills at the higher rate, not just the excess.
+   * Cache columns derive from the rates in force, so they scale with it.
+   */
+  longContext?: LongContextRates;
+}
+
+export interface LongContextRates {
+  /** Applies when the prompt (input + cache reads + cache writes) exceeds this many tokens. */
+  overTokens: number;
+  inputPerM: number;
+  outputPerM: number;
 }
 
 /** Premium input/output rates for fast mode, USD per million tokens. */
@@ -230,4 +243,6 @@ export interface RateMods {
   speed?: string;
   /** `usage.inference_geo`: "us" bills 1.1x across every category. */
   geo?: string;
+  /** Prompt size (input + cache read + cache write tokens), for models priced by prompt length. */
+  promptTokens?: number;
 }

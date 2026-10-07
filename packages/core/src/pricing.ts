@@ -42,9 +42,18 @@ const TABLE: Record<string, PriceSpec[]> = {
   // costed 50% high, and because TABLE deliberately outranks the resolver's OVERLAY,
   // auto-resolve could not have corrected it.
   "claude-sonnet-5": [{ inputPerM: 2, outputPerM: 10 }],
+  // Sonnet 5.5 keeps Sonnet 5's $2/$10 but reads cache at 0.05x ($0.10). Without an entry it
+  // prefix-matched claude-sonnet-5 and read at 2x that. Verified 2026-10-07.
+  "claude-sonnet-5-5": [{ inputPerM: 2, outputPerM: 10, cacheReadMult: 0.05 }],
   "claude-sonnet-4-6": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-sonnet-4-5": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-haiku-4-5": [{ inputPerM: 1, outputPerM: 5 }],
+  // Haiku 5.5 is priced by prompt length: prompts over 100k tokens bill the whole request
+  // at 5x. Reads stay 0.1x ($0.01 / $0.05). No fast mode. Verified 2026-10-07 against the
+  // pricing page (standard and batch tables).
+  "claude-haiku-5-5": [
+    { inputPerM: 0.1, outputPerM: 0.5, longContext: { overTokens: 100_000, inputPerM: 0.5, outputPerM: 2.5 } },
+  ],
 };
 
 /** Standard cache-read multiplier. A PriceSpec's cacheReadMult overrides it per model. */
@@ -117,8 +126,10 @@ const MIN_CACHEABLE: Array<[RegExp, number]> = [
   // Bare "claude-opus-4" (retired; normalizeModelId strips its date suffix). Must be
   // anchored — an unanchored /^claude-opus-4/ here would also swallow 4-5/4-6.
   [/^claude-opus-4$/, 1024],
+  [/^claude-haiku-5/, 512],
   [/^claude-haiku-4-5/, 4096],
   [/^claude-haiku-3-5/, 2048],
+  [/^claude-sonnet-5-5/, 512],
   [/^claude-sonnet/, 1024],
 ];
 
@@ -239,7 +250,11 @@ export interface EffectiveRates {
 
 /** Modifiers a transcript usage block carries, in the shape the rate functions want. */
 export function modsOf(usage: Usage): RateMods {
-  return { speed: usage.speed, geo: usage.inference_geo };
+  return {
+    speed: usage.speed,
+    geo: usage.inference_geo,
+    promptTokens: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens,
+  };
 }
 
 /**
@@ -257,9 +272,12 @@ export function effectiveRates(modelId: string, mods?: RateMods, atIso?: string)
   const fast = wantsFast ? price.fast : undefined;
   const geo = mods?.geo;
   const geoMult = geo === GEO_US ? GEO_US_MULT : 1;
+  const lc = price.longContext;
+  const long = lc && mods?.promptTokens !== undefined && mods.promptTokens > lc.overTokens ? lc : undefined;
+  const base = fast ?? long ?? price;
   return {
-    inputPerM: (fast?.inputPerM ?? price.inputPerM) * geoMult,
-    outputPerM: (fast?.outputPerM ?? price.outputPerM) * geoMult,
+    inputPerM: base.inputPerM * geoMult,
+    outputPerM: base.outputPerM * geoMult,
     cacheReadMult: price.cacheReadMult ?? CACHE_READ_MULT,
     unpricedFast: wantsFast && fast === undefined,
     unknownGeo: geo !== undefined && geo !== GEO_US && geo !== "global",

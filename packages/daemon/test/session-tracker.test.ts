@@ -151,7 +151,7 @@ describe("SessionTracker", () => {
     // Opus 5 in fast mode: $10/MTok input, so a 1h re-write of the prefix is 2 x $10.
     ingest(assistantLine({ uuid: "f1", ts: "2026-07-11T10:00:00.000Z", write1h: 1_000_000, model: "claude-opus-5", speed: "fast", geo: "us" }));
     const s = tracker.get("sess-t")!;
-    expect(s.rateMods).toEqual({ speed: "fast", geo: "us" });
+    expect(s.rateMods).toMatchObject({ speed: "fast", geo: "us" });
     // 1h write at the fast input rate ($10 x 2), then the US-inference 1.1x on top.
     expect(s.rewriteCostUsd).toBeCloseTo((s.prefixTokens / 1_000_000) * 20 * 1.1, 6);
 

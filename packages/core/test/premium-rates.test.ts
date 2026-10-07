@@ -141,7 +141,7 @@ describe("transcript adapter", () => {
     const u = entry?.kind === "assistant" ? entry.usage : undefined;
     expect(u?.speed).toBe("fast");
     expect(u?.inference_geo).toBe("us");
-    expect(modsOf(u!)).toEqual({ speed: "fast", geo: "us" });
+    expect(modsOf(u!)).toMatchObject({ speed: "fast", geo: "us" });
   });
 
   it("leaves both undefined when the transcript omits them", () => {
