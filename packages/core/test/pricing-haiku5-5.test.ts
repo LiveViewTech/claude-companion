@@ -6,7 +6,7 @@ import type { Usage } from "../src/types.ts";
 /**
  * Figures verified 2026-10-07 against platform.claude.com/docs/en/about-claude/pricing.
  * Haiku 5.5: $0.10 / $0.50 for prompts up to 100k tokens, $0.50 / $2.50 above; reads 0.1x.
- * Sonnet 5.5: $2 / $10, reads 0.05x ($0.10).
+ * Sonnet 5.5: $2 / $10, reads 0.1x ($0.20; the page prose says 0.05x, the meter says 0.1x).
  */
 const M = 1_000_000;
 
@@ -67,12 +67,11 @@ describe("claude-haiku-5-5 pricing", () => {
 });
 
 describe("claude-sonnet-5-5 pricing", () => {
-  it("reads cache at 0.05x ($0.10) with Sonnet 5's base rates", () => {
+  it("reads cache at the standard 0.1x ($0.20), as the meter bills it", () => {
     const c = turnCost(usage({ input_tokens: M, output_tokens: M, cache_read_input_tokens: M }), "claude-sonnet-5-5");
     expect(c.inputUsd).toBeCloseTo(2, 10);
     expect(c.outputUsd).toBeCloseTo(10, 10);
-    expect(c.cacheReadUsd).toBeCloseTo(0.1, 10);
-    expect(turnCost(usage({ cache_read_input_tokens: M }), "claude-sonnet-5").cacheReadUsd).toBeCloseTo(0.2, 10);
+    expect(c.cacheReadUsd).toBeCloseTo(0.2, 10);
   });
 });
 
@@ -97,8 +96,9 @@ describe("parsePricingDoc: length-tiered rows", () => {
     });
   });
 
-  it("flags Sonnet 5.5's 0.1x published read as a mismatch only if the table lacks 0.05x", () => {
-    // Published $0.20 would be 0.1x; the table records 0.05x, so the parser must refuse it.
-    expect(parsePricingDoc(doc).multiplierMismatch).toContain("claude-sonnet-5-5");
+  it("accepts Sonnet 5.5's published $0.20 read against the standard 0.1x", () => {
+    const p = parsePricingDoc(doc);
+    expect(p.multiplierMismatch).toEqual([]);
+    expect(p.rows.map((r) => r.modelId)).toContain("claude-sonnet-5-5");
   });
 });

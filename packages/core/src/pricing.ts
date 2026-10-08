@@ -42,9 +42,11 @@ const TABLE: Record<string, PriceSpec[]> = {
   // costed 50% high, and because TABLE deliberately outranks the resolver's OVERLAY,
   // auto-resolve could not have corrected it.
   "claude-sonnet-5": [{ inputPerM: 2, outputPerM: 10 }],
-  // Sonnet 5.5 keeps Sonnet 5's $2/$10 but reads cache at 0.05x ($0.10). Without an entry it
-  // prefix-matched claude-sonnet-5 and read at 2x that. Verified 2026-10-07.
-  "claude-sonnet-5-5": [{ inputPerM: 2, outputPerM: 10, cacheReadMult: 0.05 }],
+  // Sonnet 5.5 bills cache reads at the standard 0.1x ($0.20). The pricing page contradicts
+  // itself: its table says $0.20 but the prompt-caching prose says 0.05x ($0.10). The meter
+  // sides with the table: 2026-10-01..06 UTC per-model usage was 0.90x of ccc at 0.1x and
+  // 0.63x at 0.05x (Opus 5.5 control: 0.92x). The entry exists for its own cache minimum.
+  "claude-sonnet-5-5": [{ inputPerM: 2, outputPerM: 10 }],
   "claude-sonnet-4-6": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-sonnet-4-5": [{ inputPerM: 3, outputPerM: 15 }],
   "claude-haiku-4-5": [{ inputPerM: 1, outputPerM: 5 }],
