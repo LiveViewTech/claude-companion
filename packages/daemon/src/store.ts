@@ -99,6 +99,7 @@ export class Store {
         attribution TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_turn ON tool_calls(turn_uuid);
       CREATE TABLE IF NOT EXISTS gaps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
