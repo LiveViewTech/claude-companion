@@ -21,7 +21,7 @@ const SOUND_TIMEOUT_MS = 7000;
 // the silence instead of clipping the start of the sound ("I only hear the end"). 0 disables it.
 // 750ms gives the device enough spin-up to stop clipping the sound's start; lower
 // turnSignal.soundLeadMs to tighten the flash->sound gap, raise it if clipping returns.
-const HOOK_DEFAULTS = { enabled: true, sound: true, soundLeadMs: 750, sounds: { done: "", question: "", permission: "" } };
+const HOOK_DEFAULTS = { enabled: true, sound: true, soundLeadMs: 750, sounds: { done: "", question: "", permission: "" }, mutedReasons: [] };
 
 function baseDir(kind) {
   const env = process.env;
@@ -403,7 +403,7 @@ async function main() {
   // can. It's played synchronously so it survives the hook's exit; Claude Code's job object would
   // otherwise kill a detached player mid-note.
   const flash = post(readPort(), "/turn", { session_id: input.session_id ?? "", reason });
-  if (cfg.sound !== false) {
+  if (cfg.sound !== false && !(cfg.mutedReasons ?? []).includes(reason)) {
     // A configured path that no longer exists falls back to the platform default rather than
     // going silent (system sound themes get uninstalled; hand-edited config paths go stale).
     const configured = (cfg.sounds && cfg.sounds[reason]) || "";
