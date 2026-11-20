@@ -16,6 +16,10 @@ const TABLE: Record<string, PriceSpec[]> = {
   // Fable 5.1 and Mythos 5.1 keep 5's base rates but read cache at 0.025x ($0.25). Without
   // entries they prefix-matched claude-fable-5 / claude-mythos-5 and read at 4x that.
   // Verified 2026-09-24 against the pricing page.
+  // Fable/Mythos 5.2 drop to $8/$40 (fast $16/$80), cache reads still 0.025x ($0.20).
+  // Verified 2026-11-19 against the pricing page.
+  "claude-fable-5-2": [{ inputPerM: 8, outputPerM: 40, cacheReadMult: 0.025, fast: { inputPerM: 16, outputPerM: 80 } }],
+  "claude-mythos-5-2": [{ inputPerM: 8, outputPerM: 40, cacheReadMult: 0.025, fast: { inputPerM: 16, outputPerM: 80 } }],
   "claude-fable-5-1": [{ inputPerM: 10, outputPerM: 50, cacheReadMult: 0.025 }],
   "claude-mythos-5-1": [{ inputPerM: 10, outputPerM: 50, cacheReadMult: 0.025 }],
   "claude-fable-5": [{ inputPerM: 10, outputPerM: 50 }],
